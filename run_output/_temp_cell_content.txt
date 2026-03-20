@@ -1,0 +1,338 @@
+import uuid
+from datetime import datetime, timezone
+from config.pov_record_layouts import (
+    FORMAT_EXTENDED, EXTENDED_LINE_WIDTH, STANDARD_LINE_WIDTH,
+)
+
+# ── Configurable defaults (adjust per carrier / transaction) ─────────
+CARRIER_CODE        = "4500"
+DTCC_MEMBER_CODE    = "4602"     # Carrier DTCC member code
+DISTR_MEMBER_CODE   = "0015"     # Distributor DTCC member code
+ARR_MODE_TC         = "9"        # Single Pay
+ARR_MODE_TEXT       = "Single Pay"
+ARR_TYPE_TC         = "1004900058"
+ARR_TYPE_TEXT       = "OneTimeWithdrawal"
+ARR_SUBTYPE_TC      = "4"        # Specified Amount
+ARR_SUBTYPE_TEXT    = "Specified Amount"
+MODAL_AMT           = "2000.00"  # Default withdrawal amount
+SRC_XFER_TC         = "6"
+SRC_XFER_TEXT       = "ProrataAllFunds"
+TAX_FED_TYPE_TC     = "1"        # Default
+TAX_STATE_TYPE_TC   = "1"        # Default
+
+# ── Distributor filter (from widget) ─────────────────────────────────
+DISTRIBUTOR_FILTER  = dbutils.widgets.get("distributor_filter")
+
+# ── Extract contra-participant per contract from extension block ─────
+def _build_contra_lookup(pov_path: str) -> dict:
+    """
+    Read the raw POV file and extract the Contra-Participant ID
+    from the 36-byte extension block on each 1301 record.
+
+    Returns a dict mapping contract_number → contra_participant_id.
+    Only applicable to extended-format files (336-char lines).
+    For standard-format files (300-char lines without extensions),
+    returns an empty dict.
+    """
+    lookup = {}
+    with open(pov_path, "r", encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            line = raw.rstrip("\n\r")
+            # Only 1301 records in extended format have the extension
+            if len(line) != EXTENDED_LINE_WIDTH or line[1:5] != "1301":
+                continue
+            contract = line[5:35].strip()
+            contra   = line[307:311].strip()  # Ext_Contra_Participant at ext offset 7-10
+            lookup[contract] = contra
+    return lookup
+
+contra_lookup = _build_contra_lookup(POV_INPUT_PATH)
+
+if contra_lookup and DISTRIBUTOR_FILTER and DISTRIBUTOR_FILTER != "ALL":
+    target_contracts = {cn for cn, cp in contra_lookup.items() if cp == DISTRIBUTOR_FILTER}
+    pre_count = len(pov_df)
+    pov_df_filtered = pov_df[pov_df["Contract_Number"].isin(target_contracts)].copy()
+    print(f"Distributor filter: {DISTRIBUTOR_FILTER}")
+    print(f"  Contracts before: {pre_count}")
+    print(f"  Contracts after:  {len(pov_df_filtered)}")
+else:
+    pov_df_filtered = pov_df
+    if not contra_lookup:
+        print("Distributor filter: N/A (standard format — no extension data)")
+    else:
+        print(f"Distributor filter: ALL ({len(pov_df)} contracts, no filtering)")
+
+# ── POV column → XML column mapping ─────────────────────────────────
+POV_TO_XML = {
+    "Contract_Number":             "PolNumber",
+    "1301_CUSIP_Number":           "CusipNum",
+    "1301_Distributors_Account_ID": "DistributorClientAcctNum",
+}
+
+# ── Name / ID extraction helpers ───────────────────────────────────
+#
+# BHF packs agent/party names into the 105-char Non_Natural_Name field
+# (Last[35]+First[25]+Middle[25]+Prefix[10]+Suffix[10]).  This shifts all
+# subsequent fields LEFT by 105 bytes vs the standard DTCC layout:
+#
+#   1305 Agent_Last_Name actually contains:
+#     [0:20]  Brokers_Agent_ID
+#     [20]    Nat/NonNat Indicator
+#     [21:31] National Producer Number (NPN / NIPR)
+#
+#   1309 Party_Last_Name actually contains:
+#     [0:2]   Party_Role
+#     [2:22]  Party_ID (9-digit SSN)
+#     [22:24] Party_ID_Qualifier
+#     [24:32] Date_of_Birth (YYYYMMDD)
+
+def _extract_composite_name(value: str) -> tuple:
+    """Extract (last, first, middle) from a 105-char composite name field."""
+    if not value or not value.strip():
+        return ("", "", "")
+    last  = value[0:35].strip()  if len(value) > 0  else ""
+    first = value[35:60].strip() if len(value) > 35 else ""
+    mid   = value[60:85].strip() if len(value) > 60 else ""
+    return (last, first, mid)
+
+
+def _find_col(row, base_col: str) -> str:
+    """Resolve a column name that may or may not have an occurrence suffix."""
+    if base_col in row.index:
+        val = row[base_col]
+        return val if pd.notna(val) else ""
+    suffixed = f"{base_col}_1"
+    if suffixed in row.index:
+        val = row[suffixed]
+        return val if pd.notna(val) else ""
+    return ""
+
+
+def _extract_npn_from_agent_last(agent_last_name: str) -> str:
+    """
+    Extract NPN from Agent_Last_Name[21:31].
+
+    BHF shifts fields left by 105 bytes after packing names into the
+    composite Non_Natural_Name.  The NPN lands at offset 21 within what
+    the standard layout calls Agent_Last_Name.
+    """
+    if not agent_last_name or len(agent_last_name) < 22:
+        return ""
+    return agent_last_name[21:31].strip()
+
+
+def _find_natural_person_1309(row) -> tuple:
+    """
+    Search 1309 occurrences for the natural-person owner record.
+
+    Returns (last, first, middle, party_id).
+    - Names come from the composite Non_Natural_Entity_Name.
+    - Party_ID (SSN) comes from Party_Last_Name[2:22] (shifted layout).
+    The natural person is identified by having a non-empty first name.
+    """
+    for occ in range(1, 20):
+        for nn_col in [f"1309_Party_Non_Natural_Entity_Name_{occ}",
+                       "1309_Party_Non_Natural_Entity_Name"]:
+            if nn_col not in row.index:
+                continue
+            nn_val = row[nn_col]
+            if pd.isna(nn_val) or not nn_val.strip():
+                continue
+            last, first, mid = _extract_composite_name(nn_val)
+            if first:  # Natural person has a first name
+                # Extract Party_ID from the shifted Party_Last_Name
+                ln_col = nn_col.replace("Non_Natural_Entity_Name", "Last_Name")
+                ln_val = row.get(ln_col, "") if ln_col in row.index else ""
+                ln_val = ln_val if pd.notna(ln_val) else ""
+                party_id = ln_val[2:22].strip() if len(ln_val) > 2 else ""
+                return (last, first, mid, party_id)
+        if occ == 1 and "1309_Party_Non_Natural_Entity_Name" in row.index:
+            break
+    return ("", "", "", "")
+
+
+def _extract_last4(val):
+    """Extract last 4 digits from a possibly masked ID."""
+    if pd.isna(val) or not val:
+        return ""
+    digits = "".join(c for c in str(val) if c.isdigit())
+    return digits[-4:] if len(digits) >= 4 else digits
+
+
+def build_xml_rows(pov_df):
+    """Convert flattened POV rows into XML-schema-ready dicts."""
+    xml_columns = get_column_names()
+    now_utc = datetime.now(timezone.utc)
+    rows = []
+
+    for _, pov_row in pov_df.iterrows():
+        row = {col: "" for col in xml_columns}
+
+        # ── Static SOAP / protocol fields ──
+        row["SoapEnvelopeNs"]             = "http://www.w3.org/2003/05/soap-envelope"
+        row["SoapBodyPresent"]            = "1"
+        row["OperationName"]              = "processValueInquiry21208"
+        row["OperationNs"]                = "http://service.iwa.dtcc.com/"
+        row["MessageType"]                = "VI21208_Msg"
+        row["TXLifeRequest_PrimaryObjectID"] = "Holding_1"
+        row["TransRefGUID"]               = str(uuid.uuid4())
+        row["TransType_tc"]               = "212"
+        row["TransType_text"]             = "Values Inquiry"
+        row["TransSubType_tc"]            = "21208"
+        row["TransSubType_text"]          = "Withdrawal Quote"
+        row["TransExeDate"]               = now_utc.strftime("%Y-%m-%d")
+        row["TransExeTime"]               = now_utc.strftime("%H:%M:%S+00:00")
+        row["PendingResponseOK_tc"]       = "0"
+        row["PendingResponseOK_text"]     = "False"
+
+        # ── Holding / Policy ──
+        row["Holding_id"]                 = "Holding_1"
+        row["HoldingTypeCode_tc"]         = "2"
+        row["HoldingTypeCode_text"]       = "Policy"
+        row["Policy_CarrierPartyID"]      = "Party_Carrier"
+        row["Policy_CarrierCode"]         = CARRIER_CODE
+        row["Annuity_present"]            = "1"
+
+        # ── Arrangement ──
+        row["ArrMode_tc"]                 = ARR_MODE_TC
+        row["ArrMode_text"]               = ARR_MODE_TEXT
+        row["ArrType_tc"]                 = ARR_TYPE_TC
+        row["ArrType_text"]               = ARR_TYPE_TEXT
+        row["ArrSubType_tc"]              = ARR_SUBTYPE_TC
+        row["ArrSubType_text"]            = ARR_SUBTYPE_TEXT
+        row["ModalAmt"]                   = MODAL_AMT
+        row["SourceTransferAmtType_tc"]   = SRC_XFER_TC
+        row["SourceTransferAmtType_text"] = SRC_XFER_TEXT
+
+        # ── Tax Withholding ──
+        row["TaxFed_id"]                  = "ID_1"
+        row["TaxFed_AppliesToPartyID"]    = "Party_PrimaryOwner"
+        row["TaxFed_Place_tc"]            = "1"
+        row["TaxFed_Place_text"]          = "Federal"
+        row["TaxFed_Type_tc"]             = TAX_FED_TYPE_TC
+        row["TaxFed_Type_text"]           = "Default"
+        row["TaxState_id"]                = "ID_2"
+        row["TaxState_AppliesToPartyID"]  = "Party_PrimaryOwner"
+        row["TaxState_Place_tc"]          = "2"
+        row["TaxState_Place_text"]        = "State"
+        row["TaxState_Type_tc"]           = TAX_STATE_TYPE_TC
+        row["TaxState_Type_text"]         = "Default"
+
+        # ── OLifEExtension ──
+        row["OLifEExtension_VendorCode"]    = "87726"
+        row["OLifEExtension_ExtensionCode"] = "EXT"
+        row["AmountQualifier_tc"]           = "2"
+        row["AmountQualifier_text"]         = "Gross"
+
+        # ── Map simple POV fields into XML columns ──
+        for pov_col, xml_col in POV_TO_XML.items():
+            val = _find_col(pov_row, pov_col)
+            row[xml_col] = val
+
+        # ── Agent name (from 1305 composite Non_Natural_Name) ──
+        agent_nn = _find_col(pov_row, "1305_Agent_Non_Natural_Name")
+        agent_last, agent_first, _ = _extract_composite_name(agent_nn)
+        row["Party_Agent_FirstName"] = agent_first
+        row["Party_Agent_LastName"]  = agent_last
+
+        # ── Agent NPN (from shifted 1305_Agent_Last_Name[21:31]) ──
+        agent_ln = _find_col(pov_row, "1305_Agent_Last_Name")
+        row["Party_Agent_NIPRNumber"] = _extract_npn_from_agent_last(agent_ln)
+
+        # ── Agent partial ID ──
+        # Agent_Tax_ID is empty in BHF POV data — no SSN available for agent
+        row["Party_Agent_IDPart"]              = ""
+        row["Party_Agent_PartialIDType_tc"]    = ""
+        row["Party_Agent_PartialIDType_text"]  = ""
+
+        # ── Owner name + ID (from 1309 composite + shifted fields) ──
+        owner_last, owner_first, _, owner_pid = _find_natural_person_1309(pov_row)
+        row["Party_PrimaryOwner_FirstName"] = owner_first
+        row["Party_PrimaryOwner_LastName"]  = owner_last
+        row["Party_PrimaryOwner_IDPart"]    = _extract_last4(owner_pid)
+        row["Party_PrimaryOwner_PartialIDType_tc"]   = "1" if owner_pid else ""
+        row["Party_PrimaryOwner_PartialIDType_text"] = "SSN" if owner_pid else ""
+
+        # ── Agent party ──
+        row["Party_Agent_id"]                 = "Party_Agent"
+        row["Party_Agent_PartyTypeCode_tc"]   = "1"
+        row["Party_Agent_PartyTypeCode_text"] = "Person"
+
+        # ── Distributor party ──
+        row["Party_Distributor_id"]                     = "Party_Distributor"
+        row["Party_Distributor_PartyTypeCode_tc"]       = "2"
+        row["Party_Distributor_PartyTypeCode_text"]     = "Organization"
+        row["Party_Distributor_DTCCMemberCode"]         = DISTR_MEMBER_CODE
+        row["Party_Distributor_DTCCAssociatedMemberCode"] = DISTR_MEMBER_CODE
+
+        # ── Carrier party ──
+        row["Party_Carrier_id"]                     = "Party_Carrier"
+        row["Party_Carrier_PartyTypeCode_tc"]       = "2"
+        row["Party_Carrier_PartyTypeCode_text"]     = "Organization"
+        row["Party_Carrier_DTCCMemberCode"]         = DTCC_MEMBER_CODE
+        row["Party_Carrier_DTCCAssociatedMemberCode"] = DTCC_MEMBER_CODE
+        row["Party_Carrier_CarrierCode"]            = CARRIER_CODE
+
+        # ── Owner party ──
+        row["Party_PrimaryOwner_id"]                 = "Party_PrimaryOwner"
+        row["Party_PrimaryOwner_PartyTypeCode_tc"]   = "1"
+        row["Party_PrimaryOwner_PartyTypeCode_text"] = "Person"
+
+        # ── Annuitant (same as owner when same person) ──
+        row["Party_PrimaryAnnuitant_id"]                 = "Party_PrimaryAnnuitant"
+        row["Party_PrimaryAnnuitant_PartyTypeCode_tc"]   = "1"
+        row["Party_PrimaryAnnuitant_PartyTypeCode_text"] = "Person"
+        row["Party_PrimaryAnnuitant_FirstName"]  = row["Party_PrimaryOwner_FirstName"]
+        row["Party_PrimaryAnnuitant_LastName"]   = row["Party_PrimaryOwner_LastName"]
+        row["Party_PrimaryAnnuitant_IDPart"]     = row["Party_PrimaryOwner_IDPart"]
+        row["Party_PrimaryAnnuitant_PartialIDType_tc"]   = row["Party_PrimaryOwner_PartialIDType_tc"]
+        row["Party_PrimaryAnnuitant_PartialIDType_text"] = row["Party_PrimaryOwner_PartialIDType_text"]
+
+        # ── Relations ──
+        for role, role_tc, role_text, party_id in [
+            ("Agent",       "38", "Servicing Agent", "Party_Agent"),
+            ("Distributor", "83", "Broker Dealer",  "Party_Distributor"),
+            ("Carrier",     "87", "Carrier",        "Party_Carrier"),
+            ("Owner",       "8",  "Owner",          "Party_PrimaryOwner"),
+            ("Annuitant",   "35", "Annuitant",      "Party_PrimaryAnnuitant"),
+        ]:
+            pfx = f"Relation_{role}"
+            row[f"{pfx}_id"]                        = f"{role}_Relation"
+            row[f"{pfx}_OriginatingObjectID"]        = "Holding_1"
+            row[f"{pfx}_RelatedObjectID"]            = party_id
+            row[f"{pfx}_OriginatingObjectType_tc"]   = "4"
+            row[f"{pfx}_OriginatingObjectType_text"] = "Holding"
+            row[f"{pfx}_RelatedObjectType_tc"]       = "6"
+            row[f"{pfx}_RelatedObjectType_text"]     = "Party"
+            row[f"{pfx}_RoleCode_tc"]                = role_tc
+            row[f"{pfx}_RoleCode_text"]              = role_text
+
+        # ── Test metadata ──
+        row["ExpectedToPass"] = "1"
+        row["FailureReason"]  = ""
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+# Build the XML input DataFrame from FILTERED POV data
+xml_input_df = build_xml_rows(pov_df_filtered)
+
+# Save to CSV — fillna prevents NaN from becoming "nan" in the XML
+XML_CSV_PATH = os.path.join(BASE_DIR, "data", "pov_mapped_wd_quote.csv")
+xml_input_df.fillna("").to_csv(XML_CSV_PATH, index=False)
+
+print(f"\nMapped {len(xml_input_df)} contract(s) to {len(xml_input_df.columns)} XML columns")
+print(f"Saved to: {XML_CSV_PATH}")
+print(f"\nSample mapping (first row with agent data):")
+sample = xml_input_df[xml_input_df["Party_Agent_LastName"].str.len() > 0]
+if len(sample) == 0:
+    sample = xml_input_df
+for col in ["PolNumber", "CusipNum", "DistributorClientAcctNum",
+            "Party_Agent_FirstName", "Party_Agent_LastName",
+            "Party_Agent_NIPRNumber", "Party_Agent_IDPart",
+            "Party_PrimaryOwner_FirstName", "Party_PrimaryOwner_LastName",
+            "Party_PrimaryOwner_IDPart",
+            "Policy_CarrierCode", "ModalAmt"]:
+    val = sample.iloc[0].get(col, "")
+    print(f"  {col:<45s} = {val}")
