@@ -1,6 +1,6 @@
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
 	<soap:Body>
-		<ns2:processValueInquiry21208 xmlns:ns2="http://service.iwa.dtcc.com/" xmlns:ns3="http://ACORD.org/Standards/Life/2" xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
+		<ns2:processValueInquiry21208 xmlns:ns2="http://service.iwa.dtcc.com/" xmlns:S="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns3="http://ACORD.org/Standards/Life/2" xmlns:ns4="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:ns5="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:ns6="http://www.w3.org/2000/09/xmldsig#" xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
 			<ns3:VI21208_Msg>
 				<ns3:TXLife>
 					<ns3:TXLifeRequest PrimaryObjectID="Holding_1">
