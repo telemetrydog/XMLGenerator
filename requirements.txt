@@ -1,0 +1,10 @@
+# Databricks serverless environment v5 targets Python 3.12.3
+# Pin minimums to align with that runtime; these packages are
+# pre-installed on serverless, so this file is primarily for
+# local development and CI.
+
+pyspark>=3.5.0
+pandas>=2.2.0
+pyarrow>=15.0.0
+lxml>=4.9.0
+pytest>=7.0.0
