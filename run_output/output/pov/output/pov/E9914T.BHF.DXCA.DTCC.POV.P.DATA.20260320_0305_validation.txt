@@ -1,0 +1,48 @@
+DTCC POV Flattening Validation Report
+==================================================
+CSV File:           /Workspace/Users/edward.m.ruiz@brighthousefinancial.com/XMLGenerator/run_output/output/pov/output/pov/E9914T.BHF.DXCA.DTCC.POV.P.DATA.20260320_0305_flattened.csv
+Overall Result:     FAIL
+Expected Contracts: 6653
+Actual Contracts:   6653
+Fields Checked:     2018382
+Mismatches:         38
+
+FIELD MISMATCHES (first 50):
+  Contract=0002114803  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=224027718  RT=1301  Field=End_Receiving_Company_ID  Expected='0113'  Actual='0443'
+  Contract=225979287  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=640004690  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542820'
+  Contract=S22500420  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542820'
+  Contract=1100013210  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=1100143553  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=1100551243  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=1100683764  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=1100727157  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=1102343334  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=3203871838  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542820'
+  Contract=3209150368  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=9200207298  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=9201299724  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542820'
+  Contract=R9501103410  RT=1301  Field=End_Receiving_Company_ID  Expected='592617265'  Actual='341542819'
+  Contract=9031656  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=9031657  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=224511864  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=225949797  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=225950159  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=225951690  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=640006725  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=640006738  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=640006742  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=640007507  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=640007739  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=S22500801  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=S22500802  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=S22501833  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=S22501874  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=3200044871  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=3200044889  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=3200558011  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=3203782605  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=3204031291  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=9201293667  RT=1301  Field=End_Receiving_Company_ID  Expected='341542820'  Actual='341542819'
+  Contract=P26400611  RT=1301  Field=End_Receiving_Company_ID  Expected='0432'  Actual='0725'

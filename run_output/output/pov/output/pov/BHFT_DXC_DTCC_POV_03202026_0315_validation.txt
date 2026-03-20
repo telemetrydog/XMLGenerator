@@ -1,0 +1,8 @@
+DTCC POV Flattening Validation Report
+==================================================
+CSV File:           /Workspace/Users/edward.m.ruiz@brighthousefinancial.com/XMLGenerator/run_output/output/pov/output/pov/BHFT_DXC_DTCC_POV_03202026_0315_flattened.csv
+Overall Result:     PASS
+Expected Contracts: 158
+Actual Contracts:   158
+Fields Checked:     23911
+Mismatches:         0

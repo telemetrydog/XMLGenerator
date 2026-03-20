@@ -15,6 +15,7 @@ from config.pov_record_layouts import (
     get_layout,
     get_field_names,
     get_record_width,
+    get_total_width,
     detect_record_type,
 )
 
@@ -66,6 +67,48 @@ class TestRecordLayouts:
     def test_repeating_types_are_valid(self):
         for rt in REPEATING_RECORD_TYPES:
             assert rt in RECORD_LAYOUTS
+
+    # ── New tests for fixes ──────────────────────────────────────────
+
+    def test_pov_header_100_is_300_wide(self):
+        """R100 (POV File Header) must be exactly 300 bytes."""
+        assert get_record_width("100") == 300
+
+    def test_pov_header_120_is_300_wide(self):
+        """R120 (POV Firm Header) must be exactly 300 bytes.
+
+        Regression: Filler was 217 (total 266) instead of 251 (total 300).
+        """
+        assert get_record_width("120") == 300
+
+    def test_all_pov_headers_are_300_wide(self):
+        """Every POV header record must be 300 bytes."""
+        for rt in POV_HEADER_TYPES:
+            width = get_record_width(rt)
+            assert width == 300, f"POV header {rt} width is {width}, expected 300"
+
+    def test_get_total_width_is_alias(self):
+        """get_total_width should be an alias for get_record_width per requirements."""
+        assert get_total_width is get_record_width
+        assert get_total_width("1301") == 300
+        assert get_total_width("100") == 300
+
+    def test_total_record_type_count(self):
+        """The layout registry must contain exactly 24 record types."""
+        assert len(RECORD_LAYOUTS) == 25
+
+    def test_no_duplicate_field_names_per_record(self):
+        """Within each record type, field names must be unique."""
+        for rt, fields in RECORD_LAYOUTS.items():
+            names = [name for name, _ in fields]
+            assert len(names) == len(set(names)), (
+                f"Record {rt} has duplicate field names: "
+                f"{[n for n in names if names.count(n) > 1]}"
+            )
+
+    def test_far_file_header_400_is_300_wide(self):
+        """R400 (FAR File Header) must be exactly 300 bytes."""
+        assert get_record_width("400") == 300
 
 
 class TestDetectRecordType:

@@ -1,4 +1,4 @@
-"""
+""" 
 DTCC Positions & Valuations (POV) fixed-width record layout definitions.
 
 Covers all record types in the POV / PFF / PVF / PNF file formats and
@@ -44,7 +44,7 @@ _R120: FieldSpec = [
     ("Associated_Firm_Delivered_Contract_Count", 10),
     ("IPS_Event_Code", 3),
     ("IPS_Stage_Code", 3),
-    ("Filler", 217),
+    ("Filler", 251),
     ("Reject_Code", 12),
 ]
 
@@ -338,6 +338,43 @@ _R1315: FieldSpec = [
     ("Reject_Code", 12),
 ]
 
+
+_R1314: FieldSpec = [
+    ("Submitters_Code", 1),
+    ("Record_Type", 2),
+    ("Sequence_Number", 2),
+    ("Contract_Number", 30),
+    ("CUSIP_Fund_ID", 9),
+    ("Guaranteed_Benefit_Type", 3),
+    ("Guaranteed_Benefit_Basis", 2),
+    ("Guaranteed_Benefit_Value", 16),
+    ("Guaranteed_Benefit_Effective_Date", 8),
+    ("Guaranteed_Benefit_Expiration_Date", 8),
+    ("Guaranteed_Benefit_Reset_Date", 8),
+    ("Guaranteed_Benefit_Step_Up_Type", 1),
+    ("Guaranteed_Benefit_Step_Up_Frequency", 2),
+    ("Guaranteed_Benefit_Roll_Up_Rate", 10),
+    ("Guaranteed_Benefit_Charge_Type", 1),
+    ("Guaranteed_Benefit_Charge_Amount", 16),
+    ("Guaranteed_Benefit_Charge_Percentage", 5),
+    ("Guaranteed_Benefit_Status", 2),
+    ("Guaranteed_Benefit_Election_Date", 8),
+    ("Guaranteed_Benefit_Base_Amount", 16),
+    ("Guaranteed_Benefit_Base_Amount_Qualifier", 2),
+    ("Guaranteed_Benefit_Rider_Charge_Basis", 2),
+    ("Guaranteed_Benefit_Rider_Charge_Amount", 16),
+    ("Filler", 40),
+    ("Guaranteed_Benefit_Waiting_Period_End_Date", 8),
+    ("Guaranteed_Benefit_Highest_Anniversary_Value", 16),
+    ("Guaranteed_Benefit_HAV_Qualifier", 2),
+    ("Filler_2", 28),
+    ("Guaranteed_Benefit_Next_Step_Up_Date", 8),
+    ("Guaranteed_Benefit_Payout_Date", 8),
+    ("Guaranteed_Benefit_Payout_Frequency", 4),
+    ("Filler_3", 4),
+    ("Reject_Code", 12),
+]
+
 # ── FAR header records ───────────────────────────────────────────────
 _R400: FieldSpec = [
     ("System_Code", 1),
@@ -621,6 +658,7 @@ RECORD_LAYOUTS: RecordLayoutMap = OrderedDict([
     ("1309", _R1309),
     ("1310", _R1310),
     ("1311", _R1311),
+    ("1314", _R1314),
     ("1315", _R1315),
     ("400",  _R400),
     ("420",  _R420),
@@ -636,7 +674,7 @@ RECORD_LAYOUTS: RecordLayoutMap = OrderedDict([
 ])
 
 POV_DETAIL_TYPES = {"1301", "1302", "1303", "1304", "1305", "1306",
-                    "1307", "1309", "1310", "1311", "1315"}
+                    "1307", "1309", "1310", "1311", "1314", "1315"}
 POV_HEADER_TYPES = {"100", "120"}
 FAR_DETAIL_TYPES = {"4301", "4302", "4303", "4304", "4305", "4306",
                     "4307", "4308", "4309"}
@@ -644,8 +682,8 @@ FAR_HEADER_TYPES = {"400", "420"}
 
 # Repeating record types – a single contract can have multiple of these
 REPEATING_RECORD_TYPES = {
-    "1303", "1304", "1305", "1306", "1307", "1309", "1310",
-    "1311", "1315",
+    "1302", "1303", "1304", "1305", "1306", "1307", "1309", "1310",
+    "1311", "1314", "1315",
     "4302", "4303", "4304", "4305", "4306", "4307", "4308", "4309",
 }
 
@@ -663,6 +701,7 @@ RECORD_TYPE_DESCRIPTIONS = {
     "1309": "Party Information",
     "1310": "Party Address",
     "1311": "Annuity Payout",
+    "1314": "Guaranteed Minimum Benefits",
     "1315": "Service Features",
     "400":  "FAR File Header",
     "420":  "FAR Firm Header",
@@ -695,6 +734,105 @@ def get_record_width(record_type: str) -> int:
     """Total byte width for a record type."""
     layout = RECORD_LAYOUTS.get(record_type, [])
     return sum(w for _, w in layout)
+
+
+# Alias matching the requirements document naming convention.
+get_total_width = get_record_width
+
+
+# ── File format constants ─────────────────────────────────────────────
+
+FORMAT_STANDARD = "standard"    # Original: HDR/END text lines, 100/120 headers, 300-char lines
+FORMAT_EXTENDED = "extended"    # Production: no headers, 336-char padded lines, 36-byte extension
+
+STANDARD_LINE_WIDTH = 300
+EXTENDED_LINE_WIDTH = 336
+
+# 36-byte transmission extension appended to records with <=300 layout width
+# Only present in the extended format.  Ignored by default parsing.
+_EXTENSION_36: FieldSpec = [
+    ("Ext_Carrier_Routing_Code", 4),
+    ("Ext_File_Format_Type", 3),
+    ("Ext_Contra_Participant", 4),
+    ("Ext_Firm_Abbreviation", 3),
+    ("Ext_Contract_Ref", 20),
+    ("Ext_Record_Sequence", 2),
+]
+
+
+def detect_file_format(filepath: str, *, sample_lines: int = 20) -> str:
+    """
+    Detect whether a POV file is standard or extended format.
+
+    Standard format:
+        - Starts with an HDR text line or has 100/120 header records
+        - Lines are 300 characters wide
+        - Has HDR / END wrapper lines
+
+    Extended format:
+        - No header/trailer lines — only detail records
+        - Every line is 336 characters wide
+        - 36-byte transmission extension on records with <=300-char layouts
+
+    Returns ``FORMAT_STANDARD`` or ``FORMAT_EXTENDED``.
+    """
+    import os
+    if not os.path.isfile(filepath):
+        return FORMAT_STANDARD  # default for missing files
+
+    with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+        for _ in range(sample_lines):
+            raw = fh.readline()
+            if not raw:
+                break
+            line = raw.rstrip("\n\r")
+            if not line.strip():
+                continue
+
+            # HDR text line → standard format
+            if line.startswith("HDR"):
+                return FORMAT_STANDARD
+
+            # 100 / 120 header record → standard format
+            if len(line) >= 3:
+                rt2 = line[1:3]
+                if rt2 in ("10", "12"):
+                    return FORMAT_STANDARD
+
+            # All-detail-records + 336-char width → extended
+            if len(line) == EXTENDED_LINE_WIDTH:
+                return FORMAT_EXTENDED
+
+            # Detail record + 300-char width → standard
+            if len(line) == STANDARD_LINE_WIDTH:
+                return FORMAT_STANDARD
+
+    return FORMAT_STANDARD
+
+
+def extract_valuation_date_from_filename(filepath: str) -> str:
+    """
+    Attempt to extract a valuation/file date from the filename.
+
+    Recognises patterns like ``20260320``, ``03202026``, and
+    ``YYYYMMDD`` embedded in the basename.  Returns an 8-digit date
+    string (``YYYYMMDD``) or empty string if not found.
+    """
+    import os, re
+    basename = os.path.basename(filepath)
+
+    # Pattern 1: YYYYMMDD (e.g., 20260320)
+    m = re.search(r"(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])", basename)
+    if m:
+        return m.group(0)
+
+    # Pattern 2: MMDDYYYY (e.g., 03202026)
+    m = re.search(r"(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(20\d{2})", basename)
+    if m:
+        mm, dd, yyyy = m.group(1), m.group(2), m.group(3)
+        return f"{yyyy}{mm}{dd}"
+
+    return ""
 
 
 def detect_record_type(line: str) -> str | None:

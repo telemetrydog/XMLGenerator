@@ -1,0 +1,111 @@
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
+	<soap:Body>
+		<ns2:processValueInquiry21208 xmlns:ns2="http://service.iwa.dtcc.com/" xmlns:S="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns3="http://ACORD.org/Standards/Life/2" xmlns:ns4="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:ns5="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:ns6="http://www.w3.org/2000/09/xmldsig#" xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
+			<ns3:VI21208_Msg>
+				<ns3:TXLife>
+					<ns3:TXLifeRequest PrimaryObjectID="Holding_1">
+						<ns3:TransRefGUID>638b7b3e-99fe-4680-b79e-fe0e27b11c47</ns3:TransRefGUID>
+						<ns3:TransType tc="212">Values Inquiry</ns3:TransType>
+						<ns3:TransSubType tc="21208">Withdrawal Quote</ns3:TransSubType>
+						<ns3:TransExeDate>2026-03-20</ns3:TransExeDate>
+						<ns3:TransExeTime>17:14:36+00:00</ns3:TransExeTime>
+						<ns3:PendingResponseOK tc="0">False</ns3:PendingResponseOK>
+						<ns3:OLifE>
+							<ns3:Holding id="Holding_1">
+								<ns3:HoldingTypeCode tc="2">Policy</ns3:HoldingTypeCode>
+								<ns3:DistributorClientAcctNum>130587</ns3:DistributorClientAcctNum>
+								<ns3:Policy CarrierPartyID="Party_Carrier">
+									<ns3:PolNumber>8100025975</ns3:PolNumber>
+									<ns3:CarrierCode>4500</ns3:CarrierCode>
+									<ns3:CusipNum>10922T597</ns3:CusipNum>
+									<ns3:Annuity/>
+								</ns3:Policy>
+								<ns3:Arrangement>
+									<ns3:ArrMode tc="9">Single Pay</ns3:ArrMode>
+									<ns3:ArrType tc="1004900058">OneTimeWithdrawal</ns3:ArrType>
+									<ns3:ArrSubType tc="4">Specified Amount</ns3:ArrSubType>
+									<ModalAmt>2000.00</ModalAmt>
+									<ns3:SourceTransferAmtType tc="6">ProrataAllFunds</ns3:SourceTransferAmtType>
+									<ns3:TaxWithholding id="ID_1" AppliesToPartyID="Party_PrimaryOwner">
+										<ns3:TaxWithholdingPlace tc="1">Federal</ns3:TaxWithholdingPlace>
+										<ns3:TaxWithholdingType tc="1">Default</ns3:TaxWithholdingType>
+									</ns3:TaxWithholding>
+									<ns3:TaxWithholding id="ID_2" AppliesToPartyID="Party_PrimaryOwner">
+										<ns3:TaxWithholdingPlace tc="2">State</ns3:TaxWithholdingPlace>
+										<ns3:TaxWithholdingType tc="1">Default</ns3:TaxWithholdingType>
+									</ns3:TaxWithholding>
+									<ns3:OLifEExtension VendorCode="87726" ExtensionCode="EXT">
+										<ns3:AmountQualifier tc="2">Gross</ns3:AmountQualifier>
+									</ns3:OLifEExtension>
+								</ns3:Arrangement>
+							</ns3:Holding>
+							<ns3:Party id="Party_Agent">
+								<ns3:PartyTypeCode tc="1">Person</ns3:PartyTypeCode>
+								<ns3:Person>
+									<ns3:FirstName>DONALD</ns3:FirstName>
+									<ns3:LastName>SOMMESE</ns3:LastName>
+								</ns3:Person>
+							</ns3:Party>
+							<ns3:Party id="Party_Distributor">
+								<ns3:PartyTypeCode tc="2">Organization</ns3:PartyTypeCode>
+								<ns3:Organization>
+									<ns3:DTCCMemberCode>0015</ns3:DTCCMemberCode>
+									<ns3:DTCCAssociatedMemberCode>0015</ns3:DTCCAssociatedMemberCode>
+								</ns3:Organization>
+							</ns3:Party>
+							<ns3:Party id="Party_Carrier">
+								<ns3:PartyTypeCode tc="2">Organization</ns3:PartyTypeCode>
+								<ns3:Organization>
+									<ns3:DTCCMemberCode>4602</ns3:DTCCMemberCode>
+									<ns3:DTCCAssociatedMemberCode>4602</ns3:DTCCAssociatedMemberCode>
+								</ns3:Organization>
+								<ns3:Carrier>
+									<ns3:CarrierCode>4500</ns3:CarrierCode>
+								</ns3:Carrier>
+							</ns3:Party>
+							<ns3:Party id="Party_PrimaryOwner">
+								<ns3:PartyTypeCode tc="1">Person</ns3:PartyTypeCode>
+								<ns3:Person>
+									<ns3:FirstName>YEWQE O</ns3:FirstName>
+									<ns3:LastName>VWUYEBIV</ns3:LastName>
+								</ns3:Person>
+							</ns3:Party>
+							<ns3:Party id="Party_PrimaryAnnuitant">
+								<ns3:PartyTypeCode tc="1">Person</ns3:PartyTypeCode>
+								<ns3:Person>
+									<ns3:FirstName>YEWQE O</ns3:FirstName>
+									<ns3:LastName>VWUYEBIV</ns3:LastName>
+								</ns3:Person>
+							</ns3:Party>
+							<ns3:Relation id="Agent_Relation" OriginatingObjectID="Holding_1" RelatedObjectID="Party_Agent">
+								<ns3:OriginatingObjectType tc="4">Holding</ns3:OriginatingObjectType>
+								<ns3:RelatedObjectType tc="6">Party</ns3:RelatedObjectType>
+								<ns3:RelationRoleCode tc="37">Agent</ns3:RelationRoleCode>
+							</ns3:Relation>
+							<ns3:Relation id="Distributor_Relation" OriginatingObjectID="Holding_1" RelatedObjectID="Party_Distributor">
+								<ns3:OriginatingObjectType tc="4">Holding</ns3:OriginatingObjectType>
+								<ns3:RelatedObjectType tc="6">Party</ns3:RelatedObjectType>
+								<ns3:RelationRoleCode tc="83">Broker Dealer</ns3:RelationRoleCode>
+							</ns3:Relation>
+							<ns3:Relation id="Carrier_Relation" OriginatingObjectID="Holding_1" RelatedObjectID="Party_Carrier">
+								<ns3:OriginatingObjectType tc="4">Holding</ns3:OriginatingObjectType>
+								<ns3:RelatedObjectType tc="6">Party</ns3:RelatedObjectType>
+								<ns3:RelationRoleCode tc="87">Carrier</ns3:RelationRoleCode>
+							</ns3:Relation>
+							<ns3:Relation id="Owner_Relation" OriginatingObjectID="Holding_1" RelatedObjectID="Party_PrimaryOwner">
+								<ns3:OriginatingObjectType tc="4">Holding</ns3:OriginatingObjectType>
+								<ns3:RelatedObjectType tc="6">Party</ns3:RelatedObjectType>
+								<ns3:RelationRoleCode tc="8">Owner</ns3:RelationRoleCode>
+							</ns3:Relation>
+							<ns3:Relation id="Annuitant_Relation" OriginatingObjectID="Holding_1" RelatedObjectID="Party_PrimaryAnnuitant">
+								<ns3:OriginatingObjectType tc="4">Holding</ns3:OriginatingObjectType>
+								<ns3:RelatedObjectType tc="6">Party</ns3:RelatedObjectType>
+								<ns3:RelationRoleCode tc="35">Annuitant</ns3:RelationRoleCode>
+							</ns3:Relation>
+						</ns3:OLifE>
+					</ns3:TXLifeRequest>
+				</ns3:TXLife>
+			</ns3:VI21208_Msg>
+		</ns2:processValueInquiry21208>
+	</soap:Body>
+</soap:Envelope>

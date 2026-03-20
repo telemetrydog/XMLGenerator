@@ -6,10 +6,19 @@ Reads a text file line-by-line, detects each line's record type, and
 extracts fields according to the byte-width layout defined in
 ``config.pov_record_layouts``.
 
+Supports two file formats:
+    - **Standard**: original format with HDR/END text lines, 100/120
+      header records, and 300-character lines.
+    - **Extended**: production format with no header/trailer lines,
+      336-character padded lines, and a 36-byte transmission extension
+      on records whose layout is ≤ 300 characters.
+
+Format is auto-detected.  The public API is unchanged.
+
 Public API
 ----------
 - ``parse_line``      – parse a single fixed-width line
-- ``parse_file``      – parse an entire POV/FAR file
+- ``parse_file``      – parse an entire POV/FAR file (auto-detects format)
 - ``ParsedFile``      – dataclass holding the full parse result
 """
 
@@ -23,8 +32,13 @@ from config.pov_record_layouts import (
     RECORD_LAYOUTS,
     RECORD_TYPE_DESCRIPTIONS,
     POV_HEADER_TYPES,
+    POV_DETAIL_TYPES,
     FAR_HEADER_TYPES,
+    FORMAT_STANDARD,
+    FORMAT_EXTENDED,
+    detect_file_format,
     detect_record_type,
+    extract_valuation_date_from_filename,
 )
 
 
@@ -50,6 +64,7 @@ class ParsedFile:
     errors: list[str] = field(default_factory=list)
     file_type: str = ""
     valuation_date: str = ""
+    file_format: str = FORMAT_STANDARD
 
     @property
     def record_type_counts(self) -> dict[str, int]:
@@ -62,6 +77,7 @@ class ParsedFile:
         return {
             "filepath": self.filepath,
             "file_type": self.file_type,
+            "file_format": self.file_format,
             "valuation_date": self.valuation_date,
             "total_lines": self.total_lines,
             "parsed_lines": self.parsed_lines,
@@ -103,15 +119,24 @@ def parse_file(filepath: str) -> ParsedFile:
     """
     Parse an entire DTCC POV or FAR fixed-width file.
 
-    Each line is classified by record type and parsed into structured
-    field dictionaries.  Header records (100/120 for POV, 400/420 for
-    FAR) are separated from detail records.
+    The file format (standard vs extended) is auto-detected:
+
+    - **Standard** files have an ``HDR`` text line, ``100``/``120`` header
+      records, ``300``-character lines, and an ``END`` trailer line.
+    - **Extended** files contain only detail records (``13xx``), every
+      line is ``336`` characters, and there are no header or trailer lines.
+
+    For extended files the ``file_type`` is inferred from the presence of
+    detail record types, and ``valuation_date`` is extracted from the
+    filename when possible.
     """
     if not os.path.isfile(filepath):
         raise FileNotFoundError(f"POV file not found: {filepath}")
 
+    file_format = detect_file_format(filepath)
+
     result = ParsedFile(filepath=filepath, total_lines=0, parsed_lines=0,
-                        skipped_lines=0)
+                        skipped_lines=0, file_format=file_format)
 
     with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
         for line_num, raw_line in enumerate(fh, start=1):
@@ -125,10 +150,18 @@ def parse_file(filepath: str) -> ParsedFile:
             record = parse_line(line, line_number=line_num)
             if record is None:
                 result.skipped_lines += 1
-                result.errors.append(
-                    f"Line {line_num}: unrecognised record type "
-                    f"(first 5 chars: {line[:5]!r})"
-                )
+                # In standard format, HDR/END lines are expected non-records
+                if file_format == FORMAT_STANDARD:
+                    if not (line.startswith("HDR") or line.startswith("END")):
+                        result.errors.append(
+                            f"Line {line_num}: unrecognised record type "
+                            f"(first 5 chars: {line[:5]!r})"
+                        )
+                else:
+                    result.errors.append(
+                        f"Line {line_num}: unrecognised record type "
+                        f"(first 5 chars: {line[:5]!r})"
+                    )
                 continue
 
             result.parsed_lines += 1
@@ -142,5 +175,20 @@ def parse_file(filepath: str) -> ParsedFile:
                     result.file_type = "FAR"
             else:
                 result.detail_records.append(record)
+
+    # ── Extended format: infer metadata from content / filename ───────
+    if file_format == FORMAT_EXTENDED:
+        if not result.file_type:
+            has_pov = any(r.record_type in POV_DETAIL_TYPES
+                         for r in result.detail_records[:50])
+            has_far = any(r.record_type.startswith("43")
+                         for r in result.detail_records[:50])
+            if has_pov:
+                result.file_type = "POV"
+            elif has_far:
+                result.file_type = "FAR"
+
+        if not result.valuation_date:
+            result.valuation_date = extract_valuation_date_from_filename(filepath)
 
     return result

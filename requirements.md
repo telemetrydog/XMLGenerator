@@ -44,12 +44,23 @@ External XMLs ──> XMLAnalyzer ──> XMLValidator ──> ScorecardGenerato
                                                    success/  unsuccessful/                   │
                                   └──────────────────────────────────────────────────────────┘
 
-                                  ┌──────────────────────────────────────────────────────────┐
-                                  │                      flatten_pov                         │
-                                  │                                                          │
-POV Fixed-Width File ──> POVParser ──> POVFlattener ──> POVValidator                         │
-                                             │                │                              │
-                                        CSV output     validation report                     │
+┌──────────────────────────────────────────────────────────┐
+                                  │              flatten_pov + notebook pipeline              │
+                                  │                                                           │
+POV Fixed-Width File ──> POVParser ──> POVFlattener ──> POVValidator                          │
+                                              │                │                              │
+                                         *CSV output* validation report                       |
+                                         provide to QA                                        │
+                                              │                                               │
+                                              v                                               │
+                                  POV-to-XML Mapping (notebook Step 3)                        │
+                                              │                                               │
+                                    Mapped WD-Quote CSV                                       │
+                                              │                                               │
+                                              v                                               │
+                                     run_pipeline (Steps 1-8)                                 │
+                                              │                                               │
+                                    SOAP-wrapped 21208 XMLs                                   │
                                   └──────────────────────────────────────────────────────────┘
 ```
 
@@ -105,7 +116,7 @@ XMLGenerator/
 │   ├── test_xml_validator.py   #  8 tests
 │   ├── test_xml_analyzer.py    # 15 tests
 │   ├── test_scorecard_generator.py  # 14 tests
-│   ├── test_pov_record_layouts.py   # 14 tests
+│   ├── test_pov_record_layouts.py   # 23 tests
 │   ├── test_pov_parser.py      # 11 tests
 │   ├── test_pov_flattener.py   #  7 tests
 │   └── test_pov_validator.py   #  8 tests (+ 2 sub-tests)
@@ -345,6 +356,10 @@ relation is conditional (required when Annuitant Party is present).
 - `get_fields_by_group(group)` -- returns field definitions for a given group
 - `get_field_by_column(name)` -- look up a single field definition
 - `get_data_fields()` -- returns field definitions excluding test-metadata columns
+
+**POV Record Layout helpers** (in `config/pov_record_layouts.py`):
+
+- `get_total_width(record_type)` -- alias for `get_record_width`; calculates expected byte width
 
 ## Module Specifications
 
@@ -635,9 +650,22 @@ fixed-width text files, flattens the hierarchical multi-record-per-contract
 structure into one wide CSV row per contract, and validates the output against
 the original parsed data.
 
+**Supported file formats:**
+
+| Property | Standard | Extended |
+|----------|----------|----------|
+| Line width | 300 chars | 336 chars |
+| Header records | HDR text + 100/120 | None |
+| Trailer | END text line | None |
+| Detail records | 13xx (POV), 43xx (FAR) | 13xx (POV), 43xx (FAR) |
+| Extension block | None | 36-byte transmission metadata |
+| File type source | 100 record | Inferred from detail types |
+| Valuation date source | 100 record | Filename regex |
+| Example filename | `BHFT_DXC_DTCC_POV_03202026_0315.txt` | `E9914T.BHF.DXCA.DTCC.POV.P.DATA.20260320_0305.txt` |
+
 ### POV Record Layouts (`config/pov_record_layouts.py`)
 
-Defines the byte-level field layouts for 24 DTCC record types:
+Defines the byte-level field layouts for 25 DTCC record types:
 
 | Category | Record Types | Description |
 |----------|-------------|-------------|
@@ -656,12 +684,44 @@ Standard detail records are 300 bytes wide (exceptions: 1305, 1309 are wider).
 - `POV_HEADER_TYPES` / `FAR_HEADER_TYPES` -- header vs. detail classification
 - `POV_DETAIL_TYPES` / `FAR_DETAIL_TYPES` -- detail record sets
 
+**Format constants:**
+
+- `FORMAT_STANDARD` (`"standard"`) -- original format with HDR/END text lines,
+  100/120 header records, and 300-character lines
+- `FORMAT_EXTENDED` (`"extended"`) -- production format with no headers, 336-character
+  padded lines, and a 36-byte transmission extension
+
 **Helper functions:**
 
 - `get_layout(record_type)` -- retrieve the field spec for a record type
 - `get_field_names(record_type, include_filler)` -- get field names
 - `get_total_width(record_type)` -- calculate expected line width
 - `detect_record_type(line)` -- identify a record type from a raw line
+- `detect_file_format(filepath)` -- auto-detect standard vs extended format
+- `extract_valuation_date_from_filename(filepath)` -- extract YYYYMMDD date from filename
+
+
+### POV-to-XML Field Mapping
+
+The notebook's Step 3 maps flattened POV columns to ACORD 21208 XML schema
+fields via the `POV_TO_XML` dictionary:
+
+| POV Column (flattened)          | XML Column                  | Notes                    |
+|---------------------------------|-----------------------------|--------------------------|
+| `Contract_Number`               | `PolNumber`                 | Flattener grouping key (no prefix) |
+| `1301_CUSIP_Number`             | `CusipNum`                  | Direct mapping           |
+| `1301_Distributors_Account_ID`  | `DistributorClientAcctNum`  | Direct mapping           |
+| `1305_Agent_First_Name`         | `Party_Agent_FirstName`     | Direct mapping           |
+| `1305_Agent_Last_Name`          | `Party_Agent_LastName`      | Direct mapping           |
+| `1305_National_Producer_Number` | `Party_Agent_NIPRNumber`    | Direct mapping           |
+| `1309_Party_First_Name`         | `Party_PrimaryOwner_FirstName` | Direct mapping        |
+| `1309_Party_Last_Name`          | `Party_PrimaryOwner_LastName`  | Direct mapping        |
+| `1305_Agent_Tax_ID` (derived)   | `Party_Agent_IDPart`        | Last 4 digits extracted  |
+| `1309_Party_ID` (derived)       | `Party_PrimaryOwner_IDPart` | Last 4 digits extracted  |
+
+The remaining ~124 XML columns are populated from configurable defaults
+(SOAP envelope, ACORD tc codes, party/relation IDs, arrangement parameters,
+tax withholding settings).
 
 ### POV Parser (`modules/pov_parser.py`)
 
@@ -674,15 +734,18 @@ and extracts fields by byte position.
   `record_type`, `record_description`, `fields` (dict), and `raw_line`.
 - `ParsedFile` (dataclass) -- full parse result with `header_records`,
   `detail_records`, `errors`, `total_lines`, `parsed_lines`, `skipped_lines`,
-  `file_type`, `valuation_date`. Method: `to_summary_dict()`.
+  `file_type`, `valuation_date`, `file_format`. Method: `to_summary_dict()`.
 
 **Functions:**
 
 - `parse_line(line, line_number) -> ParsedRecord | None`
   Detects record type and extracts fields. Returns `None` for unrecognized lines.
 - `parse_file(filepath) -> ParsedFile`
-  Parses an entire file. Separates header and detail records. Auto-detects
-  file type (POV vs. FAR) and extracts the valuation date from the file header.
+  Parses an entire file. Auto-detects the file format (standard vs extended)
+  and separates header and detail records. For standard format files, extracts
+  file type and valuation date from the 100-record header. For extended format
+  files (no headers), infers file type from detail record types and extracts
+  the valuation date from the filename.
 
 ### POV Flattener (`modules/pov_flattener.py`)
 
@@ -731,7 +794,7 @@ Cross-validates the flattened CSV against the original parsed data.
 
 ## Testing
 
-121 tests across 11 test files, all executed via `pytest`.
+172 tests across 12 test files, all executed via `pytest`.
 
 | Test File                    | Tests | Covers                                    |
 |------------------------------|-------|-------------------------------------------|
@@ -742,10 +805,11 @@ Cross-validates the flattened CSV against the original parsed data.
 | test_xml_validator.py        |  8    | Valid pass, malformed XML, missing PolNumber, batch pass/fail, policy number tracking |
 | test_xml_analyzer.py         | 15    | Conformance scoring, matched/missing/custom fields, directory analysis, invalid XML handling |
 | test_scorecard_generator.py  | 14    | Row count, schema match, PASS/FAIL, enhanced scorecard, error details, CSV save, file sorting, analysis sorting |
-| test_pov_record_layouts.py   | 14    | Record descriptions, known widths, 300-byte rule, disjoint sets, detect_record_type, field name helpers |
+| test_pov_record_layouts.py   | 23    | Record descriptions, known widths, 300-byte rule, disjoint sets, detect_record_type, field name helpers, R120 width regression, get_total_width alias, duplicate field check |
 | test_pov_parser.py           | 11    | Line parsing (1301, 1302, 100), unknown records, multi-contract files, empty lines, file-not-found, summary dict |
 | test_pov_flattener.py        |  7    | Single/multi-contract flattening, repeating records with occurrence suffixes, filler exclusion, CSV write |
 | test_pov_validator.py        | 10    | Valid single/multi-contract validation, repeating records, tampered CSV detection, missing file, report writing |
+| test_pov_dual_format.py      | 42    | Format detection (standard/extended), filename date extraction, standard format parsing (HDR/END, headers, fields), extended format parsing (headerless, 336-char lines, extension bytes, metadata inference), cross-format field parity, CSV round-trip, multi-contract extended, real-file integration |
 
 **Test infrastructure:**
 
@@ -843,15 +907,95 @@ The following adjustments were made during implementation:
     issue (reserved by Python's ElementTree) was resolved by using a safe
     `acord` prefix in test XML construction.
 
+
+17. **R120 Filler correction** -- The POV Firm Header (record type `120`)
+    had a `Filler` field of 217 bytes, producing a total width of 266 instead
+    of the required 300.  The Filler was corrected to 251 bytes.  A regression
+    test (`test_pov_header_120_is_300_wide`) was added to prevent recurrence.
+
+18. **`get_total_width` alias** -- The requirements document specified
+    `get_total_width(record_type)` as a helper function, but the code only
+    defined `get_record_width`.  A public alias `get_total_width = get_record_width`
+    was added to `config/pov_record_layouts.py` for consistency with the
+    documented API.
+
+20. **Dual-format POV file support** -- The POV parser now auto-detects two
+    file formats:
+
+    - **Standard format**: original internal format with `HDR`/`END` text
+      wrapper lines, `100`/`120` header records, and 300-character fixed-width
+      lines. File type and valuation date are extracted from the `100` record.
+    - **Extended format**: production mainframe output (e.g.
+      `E9914T.BHF.DXCA.DTCC.POV.P.DATA.YYYYMMDD_HHMM.txt`) containing only
+      detail records (`13xx`), every line padded to 336 characters, with a
+      36-byte transmission extension appended to records whose layout is
+      ≤ 300 characters.
+
+    The 36-byte extension block contains routing metadata:
+
+    | Offset | Width | Field                     |
+    |--------|-------|---------------------------|
+    | 0      | 4     | Carrier routing code      |
+    | 4      | 3     | File format type (PFF/PVF)|
+    | 7      | 4     | Contra-participant number |
+    | 11     | 3     | Firm abbreviation         |
+    | 14     | 20    | Contract number reference  |
+    | 34     | 2     | Record sequence number    |
+
+    Format detection examines the first few lines: presence of `HDR` or
+    `100`/`120` records indicates standard; 336-character detail-only lines
+    indicate extended. For extended files, file type is inferred from detail
+    record type prefixes (`13xx` → POV, `43xx` → FAR), and the valuation
+    date is extracted from the filename via regex (supports both `YYYYMMDD`
+    and `MMDDYYYY` patterns). The `ParsedFile` dataclass now includes a
+    `file_format` field (`"standard"` or `"extended"`).
+
+    42 new tests in `test_pov_dual_format.py` cover format detection, both
+    format parsing paths, cross-format field parity, extension byte isolation,
+    multi-contract handling, and real-file integration for both formats.
+
+19. **POV-to-XML notebook pipeline** -- The main Databricks notebook was
+    reorganized into a four-step pipeline that starts from a POV file:
+
+    1. **Flatten POV** -- Parse a DTCC POV fixed-width file via `flatten_pov`
+       into a wide CSV (one row per contract, columns prefixed by record type).
+    2. **Explore Output** -- Load and inspect the flattened CSV to identify
+       available fields (contract number, CUSIP, agent info, owner info, etc.).
+    3. **Map to XML Schema** -- A `POV_TO_XML` dictionary maps 8 POV columns
+       to their corresponding ACORD 21208 XML columns.  The remaining \~124
+       XML fields are filled with configurable static defaults (SOAP wrapper,
+       tc codes, relation IDs, arrangement parameters, tax withholding).
+       Partial IDs (last 4 SSN) are extracted automatically.
+    4. **Generate XMLs** -- The mapped CSV is fed into `run_pipeline` to
+       produce SOAP-wrapped ACORD 21208 XMLs with full validation and
+       scorecard generation.
+
+    A synthetic POV test file (`sample_pov_file.txt`) is generated in Step 1
+    for testing; users replace `POV_INPUT_PATH` with their actual file.
+
 ## Databricks Usage
 
-**As a notebook (serverless):**
+**As a notebook (serverless) -- POV-to-XML pipeline:**
+
+The notebook follows a 4-step workflow:
+
+1. Set `POV_INPUT_PATH` to your DTCC POV file
+2. Run all cells sequentially (Setup → Flatten → Explore → Map → Generate)
+3. Adjust configurable defaults in Step 3 (carrier code, DTCC member codes,
+   withdrawal amount, arrangement type, tax withholding)
+4. Generated XMLs land in `run_output/output/success/`
 
 ```python
-from main import run_pipeline
+# Or call programmatically:
+from main import flatten_pov, run_pipeline
+pov_summary = flatten_pov(
+    input_path="/path/to/pov_file.txt",
+    base_dir="/Workspace/Users/you@company.com/XMLGenerator/run_output/output/pov",
+)
+# ... map POV fields to XML schema (see notebook Step 3) ...
 summary = run_pipeline(
     base_dir="/Workspace/Users/you@company.com/XMLGenerator/run_output",
-    csv_source="/Workspace/Users/you@company.com/XMLGenerator/run_output/data/WD_quote_samples.csv",
+    csv_source="/path/to/pov_mapped_wd_quote.csv",
     table_name="wd_quote_21208",
 )
 ```
