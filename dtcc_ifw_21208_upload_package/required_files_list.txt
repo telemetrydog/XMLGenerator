@@ -1,0 +1,37 @@
+
+DTCC IFW / ACORD 21208 – REQUIRED ARTIFACT LIST
+
+NOTE:
+The actual WSDL/XSD files are proprietary to DTCC and ACORD and cannot be redistributed.
+This file lists the EXACT artifacts Databricks must be given, with authoritative locations.
+
+--- REQUIRED WSDL ---
+- IFW_Service.wsdl
+  Contains operation: processValueInquiry21208
+  Source: DTCC Learning Portal → IFT WSDLs and Schemas (IFW)
+
+--- REQUIRED DTCC IFW SCHEMAS ---
+- IFW_Message.xsd
+- DTCC_IFW_Extensions.xsd (name varies by DTCC release)
+
+--- REQUIRED ACORD LIFE & ANNUITY SCHEMAS ---
+- TXLife.xsd
+- OLifE.xsd
+- Holding.xsd
+- Policy.xsd
+- Arrangement.xsd
+- Party.xsd
+- Person.xsd
+- Organization.xsd
+- Relation.xsd
+- Producer.xsd
+- Annuity.xsd
+- TaxWithholding.xsd
+
+--- DATA DICTIONARY (REQUIRED FOR 'WHAT IS REQUIRED') ---
+- IFW Web Services Data Dictionary (ACORD 212 / 21208)
+  Source: DTCC Learning Portal → IFT Web Services Data Dictionary
+
+--- IMPORTANT ---
+Databricks can infer STRUCTURE from WSDL + XSDs.
+Databricks CANNOT infer REQUIRED vs CONDITIONAL without the Data Dictionary.

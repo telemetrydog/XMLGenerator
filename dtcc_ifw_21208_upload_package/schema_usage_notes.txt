@@ -1,0 +1,11 @@
+
+SCHEMA USAGE NOTES FOR AGENTS
+
+1. Load WSDL + ALL referenced XSDs together
+2. Ensure xsd:import paths are preserved
+3. Treat Party, Relation, TaxWithholding as repeating structures
+4. Use Data Dictionary to enforce:
+   - Required fields
+   - Conditional logic (e.g., ArrSubType → ModalAmt)
+
+WSDL ALONE IS NOT SUFFICIENT.

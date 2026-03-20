@@ -1,5 +1,7 @@
 """
 Creates Spark SQL tables and loads CSV data into them.
+
+All columns are STRING (matching the ACORD 21208 flat-CSV format).
 """
 
 from __future__ import annotations
@@ -23,21 +25,20 @@ def load_csv(
     database: str | None = None,
 ) -> DataFrame:
     """
-    Read a CSV file into a Spark DataFrame and persist it to a table.
+    Read a CSV file into a Spark DataFrame and register as a temp view.
 
-    The CSV is read with permissive mode so invalid rows are still ingested
-    (they'll be caught later by the validator). Columns that fail to parse
-    (e.g. bad dates) are set to null.
+    All columns are STRING (no date parsing needed). Uses PERMISSIVE mode
+    so rows with wrong column counts are still ingested.
 
     Args:
         spark: active SparkSession
         csv_path: path to the CSV file
-        table_name: target table name
+        table_name: target table / temp-view name
         schema: optional StructType; defaults to get_spark_schema()
-        database: optional database prefix
+        database: optional database prefix (used only for persistent table)
 
     Returns:
-        The DataFrame that was written to the table.
+        The DataFrame.
     """
     if schema is None:
         schema = get_spark_schema()
@@ -46,20 +47,27 @@ def load_csv(
         spark.read
         .option("header", "true")
         .option("mode", "PERMISSIVE")
-        .option("dateFormat", "yyyy-MM-dd")
         .schema(schema)
         .csv(csv_path)
     )
 
-    qualified = f"{database}.{table_name}" if database else table_name
     df.createOrReplaceTempView(table_name)
-    spark.sql(f"DROP TABLE IF EXISTS {qualified}")
-    df.write.saveAsTable(qualified)
+
+    # Persist to managed table only when a database is explicitly given
+    # (skipped on serverless where the default catalog may not be writable)
+    if database:
+        qualified = f"{database}.{table_name}"
+        spark.sql(f"DROP TABLE IF EXISTS {qualified}")
+        df.write.saveAsTable(qualified)
 
     return df
 
 
-def read_table(spark: SparkSession, table_name: str, database: str | None = None) -> DataFrame:
+def read_table(
+    spark: SparkSession,
+    table_name: str,
+    database: str | None = None,
+) -> DataFrame:
     """Read the full contents of a table as a DataFrame."""
     qualified = f"{database}.{table_name}" if database else table_name
     return spark.table(qualified)

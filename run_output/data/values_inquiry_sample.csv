@@ -1,0 +1,10 @@
+TransRefGUID,TransType,TransSubType,TransExeDate,TransExeTime,TransEffDate,InquiryLevel,InquiryView,NoResponseOK,TestIndicator,HoldingID,HoldingTypeCode,PolNumber,ProductCode,CarrierCode,LineOfBusiness,ProductType,PolicyStatus
+78b13038-7c07-5e10-a5d4-5d420e33b43b,212,21207,2026-03-19,10:30:00,2026-03-19,,,0,1,Holding_1,2,ANN-2026-00001,VA-100,12345,2,Variable Annuity,1
+e91edf32-929c-5f95-bbae-1be637d2a5e5,212,21207,2026-03-19,10:31:00,2026-03-19,,,0,1,Holding_2,2,ANN-2026-00002,FIA-200,12345,2,Fixed Indexed Annuity,1
+6c4fb43e-ce18-56c2-b68e-a770f9de8809,212,21201,2026-03-18,09:15:00,2026-03-18,,,1,0,Holding_3,2,ANN-2026-00003,SPIA-300,67890,2,Single Premium Immediate Annuity,1
+51a28e1b-544d-58d5-8249-1f04504850c1,212,21203,2026-03-17,14:00:00,,,,0,1,Holding_4,2,ANN-2026-00004,FA-400,67890,2,Fixed Annuity,11
+a3239591-6f44-58c8-a548-6c29faddbece,212,21204,2026-03-16,08:45:30,2026-03-16,,,0,1,Holding_5,2,ANN-2026-00005,DIA-500,11111,2,Deferred Income Annuity,1
+3349c751-e78e-50c8-a0e7-56e4c8b5ffb4,212,21205,2026-03-15,16:20:00,2026-03-15,,,1,0,Holding_6,2,ANN-2026-00006,RILA-600,11111,2,Registered Index-Linked Annuity,1
+63ba8b78-099b-503e-99f2-453da1d206d3,212,21206,2026-03-14,11:00:00,2026-03-14,,,0,1,Holding_7,2,ANN-2026-00007,MVA-700,22222,2,Market Value Adjusted Annuity,1
+bf1e5719-36a5-5dba-9d44-fec99ba312c0,212,21207,03-19-2026,10:30:00,2026-03-19,,,0,1,Holding_8,2,ANN-2026-00008,VA-800,12345,2,Variable Annuity,1
+6671d18d-7931-50a1-b4ec-6e0903cbac7e,212,21207,2026-03-19,10:30:00,2026-03-19,,,0,1,Holding_9,2,,FIA-900,12345,2,Fixed Indexed Annuity,1

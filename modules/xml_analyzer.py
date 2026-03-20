@@ -1,10 +1,10 @@
 """
-Analyzes external DTCC Values Inquiry XMLs against our schema implementation.
+Analyzes external DTCC 21208 Withdrawal-Quote XMLs against our schema.
 
 Walks the incoming XML tree, compares every element/attribute to our
-FIELD_DEFINITIONS, and classifies each as matched (standard), missing
-(in our schema but absent from the XML), or custom (in the XML but not
-in our schema -- likely a carrier-specific or DTCC extension).
+FIELD_DEFINITIONS, and classifies each as matched, missing, or custom.
+
+Handles both SOAP-wrapped and bare TXLife root elements.
 """
 
 from __future__ import annotations
@@ -13,18 +13,27 @@ import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
-from config.schema_config import ACORD_NAMESPACE, FIELD_DEFINITIONS
+from config.schema_config import (
+    ACORD_NAMESPACE,
+    SOAP_NAMESPACE,
+    OPERATION_NAMESPACE,
+    FIELD_DEFINITIONS,
+    GROUP_META,
+)
 from modules.xml_validator import validate_xml, ValidationResult
 
 
-NS = {"acord": ACORD_NAMESPACE}
-_NS_BRACE = f"{{{ACORD_NAMESPACE}}}"
+_NS_MAP = {
+    ACORD_NAMESPACE: "ns3",
+    SOAP_NAMESPACE: "soap",
+    OPERATION_NAMESPACE: "ns2",
+}
 
 
 def _strip_ns(tag: str) -> str:
     """Remove the namespace brace prefix from an element tag."""
-    if tag.startswith(_NS_BRACE):
-        return tag[len(_NS_BRACE):]
+    if "{" in tag:
+        return tag.split("}", 1)[1]
     return tag
 
 
@@ -32,8 +41,20 @@ def _build_known_tags() -> set[str]:
     """Return set of element local-names that our schema knows about."""
     tags = set()
     for fd in FIELD_DEFINITIONS:
-        tags.add(fd["xml_tag"])
-    tags.update({"TXLife", "TXLifeRequest", "OLifE", "Holding", "Policy"})
+        if fd["group"] == GROUP_META:
+            continue
+        t = fd["xml_tag"]
+        if t and "_text" not in t and "_ext" not in t and "_AppliesTo" not in t:
+            tags.add(t)
+    # Structural elements
+    tags.update({
+        "Envelope", "Body", "processValueInquiry21208",
+        "VI21208_Msg", "TXLife", "TXLifeRequest", "OLifE",
+        "Holding", "Policy", "Arrangement", "Annuity",
+        "TaxWithholding", "OLifEExtension",
+        "Party", "Person", "Organization", "Producer",
+        "Carrier", "PartialIdentification", "Relation",
+    })
     return tags
 
 
@@ -43,13 +64,10 @@ class AnalysisResult:
     policy_number: str
     filename: str
     filepath: str
-
     validation: ValidationResult
-
     matched_fields: list[str] = field(default_factory=list)
     missing_fields: list[str] = field(default_factory=list)
-    custom_fields: list[str] = field(default_factory=list)
-
+    custom_fields: list[str]  = field(default_factory=list)
     conformance_pct: float = 0.0
 
     @property
@@ -70,66 +88,54 @@ class AnalysisResult:
 
 
 def _collect_element_tags(root: ET.Element) -> set[str]:
-    """Recursively collect all unique element local-names in the tree."""
-    tags = set()
-    for el in root.iter():
-        tags.add(_strip_ns(el.tag))
-    return tags
+    """Recursively collect all unique element local-names."""
+    return {_strip_ns(el.tag) for el in root.iter()}
 
 
-def _collect_element_paths(root: ET.Element, prefix: str = "") -> list[str]:
-    """
-    Recursively collect full dot-separated paths for every element in the tree.
-    E.g. "TXLife.TXLifeRequest.OLifE.Holding.Policy.PolNumber"
-    """
-    paths = []
-    local = _strip_ns(root.tag)
-    current = f"{prefix}.{local}" if prefix else local
-    paths.append(current)
-    for child in root:
-        paths.extend(_collect_element_paths(child, current))
-    return paths
-
-
-def analyze_xml(xml_string: str, filename: str = "", filepath: str = "") -> AnalysisResult:
-    """
-    Analyze a single XML string against our schema.
-
-    Returns an AnalysisResult with validation results plus schema-difference
-    breakdown (matched, missing, custom fields).
-    """
+def analyze_xml(xml_string: str, filename: str = "",
+                filepath: str = "") -> AnalysisResult:
+    """Analyze a single XML string against our schema."""
     validation = validate_xml(xml_string)
     known_tags = _build_known_tags()
 
-    schema_field_tags = {fd["xml_tag"] for fd in FIELD_DEFINITIONS}
+    schema_field_tags = set()
+    for fd in FIELD_DEFINITIONS:
+        if fd["group"] == GROUP_META:
+            continue
+        t = fd["xml_tag"]
+        if t and "_text" not in t and "_ext" not in t and "_AppliesTo" not in t:
+            schema_field_tags.add(t)
 
     try:
         root = ET.fromstring(xml_string)
     except ET.ParseError:
         return AnalysisResult(
             policy_number=validation.policy_number,
-            filename=filename,
-            filepath=filepath,
-            validation=validation,
-            conformance_pct=0.0,
+            filename=filename, filepath=filepath,
+            validation=validation, conformance_pct=0.0,
         )
 
     xml_tags = _collect_element_tags(root)
-    xml_paths = _collect_element_paths(root)
 
     matched = sorted(schema_field_tags & xml_tags)
     missing = sorted(schema_field_tags - xml_tags)
 
-    structural_tags = {"TXLife", "TXLifeRequest", "OLifE", "Holding", "Policy"}
-    custom = sorted(xml_tags - known_tags - structural_tags)
+    structural = {
+        "Envelope", "Body", "processValueInquiry21208",
+        "VI21208_Msg", "TXLife", "TXLifeRequest", "OLifE",
+        "Holding", "Policy", "Arrangement", "Annuity",
+        "TaxWithholding", "OLifEExtension",
+        "Party", "Person", "Organization", "Producer",
+        "Carrier", "PartialIdentification", "Relation",
+    }
+    custom = sorted(xml_tags - known_tags - structural)
 
-    total_schema_fields = len(schema_field_tags)
-    conformance = (len(matched) / total_schema_fields * 100) if total_schema_fields else 0.0
+    total = len(schema_field_tags)
+    conformance = (len(matched) / total * 100) if total else 0.0
 
     return AnalysisResult(
         policy_number=validation.policy_number,
-        filename=filename,
-        filepath=filepath,
+        filename=filename, filepath=filepath,
         validation=validation,
         matched_fields=matched,
         missing_fields=missing,

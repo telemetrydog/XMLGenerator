@@ -3,7 +3,7 @@ Generates validation scorecards and sorts XML files into
 success/ and unsuccessful/ folders based on validation or analysis results.
 
 Supports two modes:
-  - Basic: from ValidationResult (original pipeline)
+  - Basic: from ValidationResult (pipeline generation)
   - Enhanced: from AnalysisResult (external XML analysis with schema diffs)
 """
 
@@ -24,6 +24,7 @@ SCORECARD_SCHEMA = StructType([
     StructField("FileName", StringType(), False),
     StructField("Status", StringType(), False),
     StructField("ErrorDetails", StringType(), True),
+    StructField("ExpectedResult", StringType(), True),
     StructField("Timestamp", StringType(), False),
 ])
 
@@ -47,25 +48,34 @@ def generate_scorecard(
     spark: SparkSession,
     validation_results: list[ValidationResult],
     xml_results: list[dict],
+    csv_rows: list[dict] | None = None,
 ) -> DataFrame:
     """
     Create a basic PySpark DataFrame scorecard from validation results.
 
-    Columns: PolNumber, FileName, Status (PASS/FAIL), ErrorDetails, Timestamp.
-    Uses positional pairing: validation_results[i] corresponds to xml_results[i].
+    If *csv_rows* is provided, includes the ExpectedToPass / FailureReason
+    columns from the test CSV for comparison.
     """
     now = datetime.now(timezone.utc).isoformat()
     rows = []
 
     for i, vr in enumerate(validation_results):
         xml_info = xml_results[i] if i < len(xml_results) else {}
-        filename = xml_info.get("filename", f"ValuesInquiry_{vr.policy_number}.xml")
+        filename = xml_info.get("filename", f"WDQuote_{vr.policy_number}.xml")
+        expected = ""
+        if csv_rows and i < len(csv_rows):
+            exp_pass = csv_rows[i].get("ExpectedToPass", "")
+            fail_reason = csv_rows[i].get("FailureReason", "")
+            expected = f"ExpectedToPass={exp_pass}"
+            if fail_reason:
+                expected += f"; Reason={fail_reason}"
 
         rows.append((
             vr.policy_number,
             filename,
             "PASS" if vr.valid else "FAIL",
             "; ".join(vr.errors) if vr.errors else None,
+            expected or None,
             now,
         ))
 
@@ -77,14 +87,8 @@ def generate_enhanced_scorecard(
     analysis_results: list,
 ) -> DataFrame:
     """
-    Create an enhanced PySpark DataFrame scorecard from AnalysisResult objects.
-
-    Includes schema-difference columns so you can see which fields are standard
-    (matched), which our schema expects but the XML omits (missing), and which
-    the XML contains beyond our schema (custom / carrier-specific).
+    Create an enhanced scorecard from AnalysisResult objects.
     """
-    from modules.xml_analyzer import AnalysisResult
-
     now = datetime.now(timezone.utc).isoformat()
     rows = []
 
@@ -121,26 +125,18 @@ def sort_xml_files(
     success_dir: str,
     fail_dir: str,
 ) -> dict[str, list[str]]:
-    """
-    Copy XML files to success/ or unsuccessful/ based on validation.
-
-    Uses positional pairing: validation_results[i] corresponds to xml_results[i].
-    Returns dict with 'success' and 'unsuccessful' keys listing file paths.
-    """
+    """Copy XML files to success/ or unsuccessful/ based on validation."""
     os.makedirs(success_dir, exist_ok=True)
     os.makedirs(fail_dir, exist_ok=True)
-
     sorted_files: dict[str, list[str]] = {"success": [], "unsuccessful": []}
 
     for i, vr in enumerate(validation_results):
         if i >= len(xml_results):
             break
-
         xml_info = xml_results[i]
         src = xml_info["filepath"]
         if not os.path.exists(src):
             continue
-
         if vr.valid:
             dest = os.path.join(success_dir, xml_info["filename"])
             shutil.copy2(src, dest)
@@ -158,21 +154,15 @@ def sort_analyzed_files(
     success_dir: str,
     fail_dir: str,
 ) -> dict[str, list[str]]:
-    """
-    Copy analyzed XML files to success/ or unsuccessful/ based on validation.
-
-    Returns dict with 'success' and 'unsuccessful' keys listing file paths.
-    """
+    """Copy analyzed XML files to success/ or unsuccessful/."""
     os.makedirs(success_dir, exist_ok=True)
     os.makedirs(fail_dir, exist_ok=True)
-
     sorted_files: dict[str, list[str]] = {"success": [], "unsuccessful": []}
 
     for ar in analysis_results:
         src = ar.filepath
         if not src or not os.path.exists(src):
             continue
-
         if ar.validation.valid:
             dest = os.path.join(success_dir, ar.filename)
             shutil.copy2(src, dest)
