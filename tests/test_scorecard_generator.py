@@ -6,15 +6,22 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import xml.etree.ElementTree as ET
+
+from config.schema_config import ACORD_NAMESPACE, ACORD_NS_PREFIX
 from modules.csv_generator import generate_sample_csv
 from modules.table_manager import load_csv
 from modules.xml_generator import generate_all_xmls
 from modules.xml_validator import validate_all, ValidationResult
+from modules.xml_analyzer import analyze_xml, analyze_xml_directory
 from modules.scorecard_generator import (
     generate_scorecard,
+    generate_enhanced_scorecard,
     save_scorecard,
     sort_xml_files,
+    sort_analyzed_files,
     SCORECARD_SCHEMA,
+    ENHANCED_SCORECARD_SCHEMA,
 )
 
 
@@ -102,4 +109,91 @@ class TestSortXmlFiles:
         fail_dir = os.path.join(tmp_dir, "unsuccessful")
         sorted_files = sort_xml_files(validation_results, xml_results, success_dir, fail_dir)
         assert len(sorted_files["success"]) == 3
+        assert len(sorted_files["unsuccessful"]) == 0
+
+
+def _make_analysis_xml(pol_number, extra_tags=None, tmp_dir=None):
+    """Write a test XML and return its path."""
+    ns = ACORD_NAMESPACE
+    ET.register_namespace(ACORD_NS_PREFIX, ns)
+    txlife = ET.Element(f"{{{ns}}}TXLife")
+    req = ET.SubElement(txlife, f"{{{ns}}}TXLifeRequest", PrimaryObjectID="H1")
+    ET.SubElement(req, f"{{{ns}}}TransRefGUID").text = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    tt = ET.SubElement(req, f"{{{ns}}}TransType")
+    tt.text = "Values Inquiry"
+    tt.set("tc", "212")
+    ET.SubElement(req, f"{{{ns}}}TransExeDate").text = "2026-03-19"
+    ET.SubElement(req, f"{{{ns}}}TransExeTime").text = "10:30:00"
+    olife = ET.SubElement(req, f"{{{ns}}}OLifE")
+    holding = ET.SubElement(olife, f"{{{ns}}}Holding", id="H1")
+    htc = ET.SubElement(holding, f"{{{ns}}}HoldingTypeCode")
+    htc.text = "Policy"
+    htc.set("tc", "2")
+    policy = ET.SubElement(holding, f"{{{ns}}}Policy")
+    ET.SubElement(policy, f"{{{ns}}}PolNumber").text = pol_number
+    ET.SubElement(policy, f"{{{ns}}}CarrierCode").text = "12345"
+    for tag in (extra_tags or []):
+        ET.SubElement(policy, f"{{{ns}}}{tag}").text = "ext-value"
+    xml_str = ET.tostring(txlife, encoding="unicode", xml_declaration=True)
+    path = os.path.join(tmp_dir, f"ValuesInquiry_{pol_number}.xml")
+    with open(path, "w") as f:
+        f.write(xml_str)
+    return path
+
+
+class TestEnhancedScorecard:
+    def test_enhanced_schema(self, spark, tmp_dir):
+        path = _make_analysis_xml("ENH-001", tmp_dir=tmp_dir)
+        results = [analyze_xml(open(path).read(), filename=os.path.basename(path), filepath=path)]
+        sc = generate_enhanced_scorecard(spark, results)
+        assert sc.schema == ENHANCED_SCORECARD_SCHEMA
+
+    def test_enhanced_has_conformance(self, spark, tmp_dir):
+        path = _make_analysis_xml("ENH-002", tmp_dir=tmp_dir)
+        results = [analyze_xml(open(path).read(), filename=os.path.basename(path), filepath=path)]
+        sc = generate_enhanced_scorecard(spark, results)
+        row = sc.collect()[0]
+        assert row["ConformancePct"] is not None
+        assert row["ConformancePct"] > 0
+
+    def test_enhanced_shows_custom_fields(self, spark, tmp_dir):
+        path = _make_analysis_xml("ENH-003", extra_tags=["MyExtField"], tmp_dir=tmp_dir)
+        results = [analyze_xml(open(path).read(), filename=os.path.basename(path), filepath=path)]
+        sc = generate_enhanced_scorecard(spark, results)
+        row = sc.collect()[0]
+        assert "MyExtField" in row["CustomFields"]
+        assert row["CustomCount"] == "1"
+
+    def test_enhanced_shows_missing_fields(self, spark, tmp_dir):
+        path = _make_analysis_xml("ENH-004", tmp_dir=tmp_dir)
+        results = [analyze_xml(open(path).read(), filename=os.path.basename(path), filepath=path)]
+        sc = generate_enhanced_scorecard(spark, results)
+        row = sc.collect()[0]
+        assert row["MissingFields"] is not None
+        assert "ProductCode" in row["MissingFields"]
+
+    def test_enhanced_save_to_csv(self, spark, tmp_dir):
+        path = _make_analysis_xml("ENH-005", extra_tags=["Ext1", "Ext2"], tmp_dir=tmp_dir)
+        results = [analyze_xml(open(path).read(), filename=os.path.basename(path), filepath=path)]
+        sc = generate_enhanced_scorecard(spark, results)
+        csv_path = os.path.join(tmp_dir, "enhanced_scorecard.csv")
+        save_scorecard(sc, csv_path)
+        with open(csv_path) as f:
+            lines = f.readlines()
+        assert len(lines) == 2
+        header = lines[0].strip()
+        assert "CustomFields" in header
+        assert "ConformancePct" in header
+
+
+class TestSortAnalyzedFiles:
+    def test_sorts_by_analysis_result(self, spark, tmp_dir):
+        good = _make_analysis_xml("GOOD-001", tmp_dir=tmp_dir)
+        good_r = analyze_xml(open(good).read(), filename=os.path.basename(good), filepath=good)
+        assert good_r.status == "PASS"
+
+        success_dir = os.path.join(tmp_dir, "s")
+        fail_dir = os.path.join(tmp_dir, "f")
+        sorted_files = sort_analyzed_files([good_r], success_dir, fail_dir)
+        assert len(sorted_files["success"]) == 1
         assert len(sorted_files["unsuccessful"]) == 0

@@ -24,6 +24,7 @@ output/success/
 output/unsuccessful/
 output/ddl.sql
 output/scorecard.csv
+output/analysis_scorecard.csv
 data/values_inquiry_sample.csv
 
 # OS

@@ -35,7 +35,11 @@ from modules.csv_generator import generate_sample_csv
 from modules.table_manager import create_table, load_csv, read_table
 from modules.xml_generator import generate_all_xmls
 from modules.xml_validator import validate_all
-from modules.scorecard_generator import generate_scorecard, save_scorecard, sort_xml_files
+from modules.xml_analyzer import analyze_xml_file, analyze_xml_directory
+from modules.scorecard_generator import (
+    generate_scorecard, generate_enhanced_scorecard,
+    save_scorecard, sort_xml_files, sort_analyzed_files,
+)
 
 
 def _is_databricks() -> bool:
@@ -163,24 +167,109 @@ def run_pipeline(
     return summary
 
 
+def analyze_external(
+    input_path: str,
+    base_dir: str = ".",
+) -> dict:
+    """
+    Analyze one or more external DTCC Values Inquiry XMLs against our schema.
+
+    Args:
+        input_path: path to a single .xml file or a directory of .xml files
+        base_dir: root output directory for scorecard and sorted files
+
+    Returns:
+        Summary dict with analysis results.
+    """
+    output_dir = os.path.join(base_dir, "output")
+    success_dir = os.path.join(output_dir, "success")
+    fail_dir = os.path.join(output_dir, "unsuccessful")
+
+    for d in [output_dir, success_dir, fail_dir]:
+        os.makedirs(d, exist_ok=True)
+
+    spark = _get_spark()
+
+    print(f"[1/4] Analyzing XML(s) from: {input_path}")
+    if os.path.isdir(input_path):
+        results = analyze_xml_directory(input_path)
+    elif os.path.isfile(input_path):
+        results = [analyze_xml_file(input_path)]
+    else:
+        raise FileNotFoundError(f"Input path not found: {input_path}")
+
+    print(f"       Analyzed {len(results)} XML file(s)")
+
+    for ar in results:
+        print(f"\n  --- {ar.filename} ---")
+        print(f"  Policy:      {ar.policy_number}")
+        print(f"  Status:      {ar.status}")
+        print(f"  Conformance: {ar.conformance_pct}%")
+        print(f"  Matched:     {len(ar.matched_fields)} fields  {ar.matched_fields}")
+        print(f"  Missing:     {len(ar.missing_fields)} fields  {ar.missing_fields}")
+        print(f"  Custom:      {len(ar.custom_fields)} fields  {ar.custom_fields}")
+        if ar.validation.errors:
+            print(f"  Errors:      {ar.validation.errors}")
+
+    print(f"\n[2/4] Generating enhanced scorecard...")
+    sc_df = generate_enhanced_scorecard(spark, results)
+    sc_path = save_scorecard(sc_df, os.path.join(output_dir, "analysis_scorecard.csv"))
+    print(f"       Scorecard saved to {sc_path}")
+
+    print("[3/4] Sorting XMLs into success/unsuccessful...")
+    sorted_files = sort_analyzed_files(results, success_dir, fail_dir)
+    print(f"       Success: {len(sorted_files['success'])} files")
+    print(f"       Unsuccessful: {len(sorted_files['unsuccessful'])} files")
+
+    passed = sum(1 for r in results if r.validation.valid)
+    failed = len(results) - passed
+    print(f"[4/4] Analysis complete!")
+
+    return {
+        "input_path": input_path,
+        "files_analyzed": len(results),
+        "passed": passed,
+        "failed": failed,
+        "scorecard_path": sc_path,
+        "success_count": len(sorted_files["success"]),
+        "unsuccessful_count": len(sorted_files["unsuccessful"]),
+    }
+
+
 def main():
-    parser = argparse.ArgumentParser(description="DTCC Values Inquiry XML Generator")
-    parser.add_argument("--base-dir", default=".", help="Base output directory")
-    parser.add_argument("--table-name", default="values_inquiry", help="Spark table name")
-    parser.add_argument("--database", default=None, help="Database/schema prefix")
-    parser.add_argument("--num-valid", type=int, default=7, help="Number of valid sample rows")
-    parser.add_argument("--num-invalid", type=int, default=2, help="Number of invalid sample rows")
+    parser = argparse.ArgumentParser(description="DTCC Values Inquiry XML Generator & Analyzer")
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    gen_parser = subparsers.add_parser("generate", help="Generate sample XMLs and run pipeline")
+    gen_parser.add_argument("--base-dir", default=".", help="Base output directory")
+    gen_parser.add_argument("--table-name", default="values_inquiry", help="Spark table name")
+    gen_parser.add_argument("--database", default=None, help="Database/schema prefix")
+    gen_parser.add_argument("--num-valid", type=int, default=7, help="Number of valid sample rows")
+    gen_parser.add_argument("--num-invalid", type=int, default=2, help="Number of invalid sample rows")
+
+    analyze_parser = subparsers.add_parser("analyze", help="Analyze external DTCC XML(s) against our schema")
+    analyze_parser.add_argument("input", help="Path to a .xml file or directory of .xml files")
+    analyze_parser.add_argument("--base-dir", default=".", help="Base output directory")
+
     args = parser.parse_args()
 
-    summary = run_pipeline(
-        base_dir=args.base_dir,
-        table_name=args.table_name,
-        database=args.database,
-        num_valid=args.num_valid,
-        num_invalid=args.num_invalid,
-    )
+    if args.command == "analyze":
+        summary = analyze_external(
+            input_path=args.input,
+            base_dir=args.base_dir,
+        )
+    elif args.command == "generate":
+        summary = run_pipeline(
+            base_dir=args.base_dir,
+            table_name=args.table_name,
+            database=args.database,
+            num_valid=args.num_valid,
+            num_invalid=args.num_invalid,
+        )
+    else:
+        summary = run_pipeline()
 
-    print("\n=== Pipeline Summary ===")
+    print("\n=== Summary ===")
     for k, v in summary.items():
         print(f"  {k}: {v}")
 
