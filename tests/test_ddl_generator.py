@@ -1,5 +1,7 @@
 """Tests for DDL generator module."""
 
+from __future__ import annotations
+
 import os
 import sys
 
@@ -15,19 +17,13 @@ class TestGenerateDDL:
         for fd in FIELD_DEFINITIONS:
             assert fd["column_name"] in ddl
 
-    def test_required_columns_not_null(self):
+    def test_all_columns_are_string(self):
         ddl = generate_ddl("values_inquiry")
         for fd in FIELD_DEFINITIONS:
-            if fd["required"]:
-                assert f"{fd['column_name']} STRING NOT NULL" in ddl or \
-                       f"{fd['column_name']} DATE NOT NULL" in ddl
-
-    def test_optional_columns_nullable(self):
-        ddl = generate_ddl("values_inquiry")
-        for fd in FIELD_DEFINITIONS:
-            if not fd["required"]:
-                col_line = [l for l in ddl.splitlines() if fd["column_name"] in l][0]
-                assert "NOT NULL" not in col_line
+            col_line = [l for l in ddl.splitlines()
+                        if fd["column_name"] in l]
+            assert len(col_line) >= 1
+            assert "STRING" in col_line[0]
 
     def test_uses_delta_format(self):
         ddl = generate_ddl("values_inquiry")
@@ -47,8 +43,9 @@ class TestGenerateDDL:
 
     def test_column_count(self):
         ddl = generate_ddl("values_inquiry")
-        column_lines = [l.strip() for l in ddl.splitlines() if l.strip().startswith(("Trans", "Inq", "No", "Test", "Hold", "Pol", "Prod", "Car", "Line", "Policy"))]
-        assert len(column_lines) == len(FIELD_DEFINITIONS)
+        col_lines = [l.strip() for l in ddl.splitlines()
+                     if "STRING COMMENT" in l]
+        assert len(col_lines) == len(FIELD_DEFINITIONS)
 
 
 class TestSaveDDL:

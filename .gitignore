@@ -25,7 +25,9 @@ output/unsuccessful/
 output/ddl.sql
 output/scorecard.csv
 output/analysis_scorecard.csv
+output/pov/
 data/values_inquiry_sample.csv
+data/sample_pov.txt
 
 # OS
 .DS_Store

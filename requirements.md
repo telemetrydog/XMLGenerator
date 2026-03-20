@@ -1,19 +1,27 @@
-# DTCC IFW 21208 Withdrawal-Quote XML Generator -- Requirements
+# DTCC IFW 21208 Withdrawal-Quote XML Generator & POV Flattener -- Requirements
 
 ## Overview
 
-A modular PySpark application that generates SOAP-wrapped, ACORD-compliant DTCC
-Withdrawal-Quote (TransType 212 / TransSubType 21208) request XMLs from tabular
-CSV data, validates them against the DTCC IFW Data Dictionary, analyzes external
-XML files for schema conformance, produces scorecards, and sorts output files
-into success/unsuccessful folders. Structured for Databricks serverless
-deployment.
+A modular PySpark application that:
+
+1. **Generates** SOAP-wrapped, ACORD-compliant DTCC Withdrawal-Quote
+   (TransType 212 / TransSubType 21208) request XMLs from tabular CSV data.
+2. **Validates** generated XMLs against the DTCC IFW Data Dictionary.
+3. **Analyzes** external XML files for schema conformance.
+4. **Produces scorecards** and sorts output files into success/unsuccessful
+   folders.
+5. **Parses & flattens** DTCC POV (Positions & Valuations) fixed-width files
+   into CSV, with automated validation of data integrity.
+
+Structured for Databricks serverless deployment.
 
 ## Architecture
 
-The project follows a pipeline pattern with two entry points: `run_pipeline`
-(generate XMLs from CSV) and `analyze_external` (analyze third-party XMLs).
-All modules use PySpark DataFrames for Databricks compatibility.
+The project follows a pipeline pattern with three entry points:
+`run_pipeline` (generate XMLs from CSV), `analyze_external` (analyze
+third-party XMLs), and `flatten_pov` (parse & flatten DTCC POV files).
+The XML pipelines use PySpark DataFrames for Databricks compatibility; the
+POV pipeline is pure-Python for lightweight execution.
 
 ```
                                   ┌──────────────────────────────────────────────────────────┐
@@ -34,6 +42,14 @@ CSV Source ───> CSVGenerator ───┘                                 
 External XMLs ──> XMLAnalyzer ──> XMLValidator ──> ScorecardGenerator (enhanced)             │
                                                         │         │                          │
                                                    success/  unsuccessful/                   │
+                                  └──────────────────────────────────────────────────────────┘
+
+                                  ┌──────────────────────────────────────────────────────────┐
+                                  │                      flatten_pov                         │
+                                  │                                                          │
+POV Fixed-Width File ──> POVParser ──> POVFlattener ──> POVValidator                         │
+                                             │                │                              │
+                                        CSV output     validation report                     │
                                   └──────────────────────────────────────────────────────────┘
 ```
 
@@ -65,7 +81,8 @@ Timestamps use `datetime.now(timezone.utc)` instead of the deprecated
 XMLGenerator/
 ├── config/
 │   ├── __init__.py
-│   └── schema_config.py        # ACORD 21208 schema definition, namespaces, field types, validation rules
+│   ├── schema_config.py        # ACORD 21208 schema definition, namespaces, field types, validation rules
+│   └── pov_record_layouts.py   # DTCC POV/FAR fixed-width record type definitions (24 types)
 ├── modules/
 │   ├── __init__.py
 │   ├── ddl_generator.py        # Step 1: DDL from schema config
@@ -74,17 +91,24 @@ XMLGenerator/
 │   ├── xml_generator.py        # Step 4: Table rows -> SOAP-wrapped XML files
 │   ├── xml_validator.py        # Step 5: Validate XML against data dictionary
 │   ├── xml_analyzer.py         # External XML analysis (schema conformance)
-│   └── scorecard_generator.py  # Steps 7-8: Scorecard + sort into folders
+│   ├── scorecard_generator.py  # Steps 7-8: Scorecard + sort into folders
+│   ├── pov_parser.py           # POV: Parse fixed-width file into structured records
+│   ├── pov_flattener.py        # POV: Flatten hierarchical records into wide CSV rows
+│   └── pov_validator.py        # POV: Validate CSV fidelity against original parse
 ├── tests/
 │   ├── __init__.py
-│   ├── conftest.py             # Shared SparkSession fixture
-│   ├── test_ddl_generator.py   # 10 tests
-│   ├── test_csv_generator.py   # 11 tests
+│   ├── conftest.py             # Shared SparkSession fixture + test data helpers
+│   ├── test_ddl_generator.py   #  9 tests
+│   ├── test_csv_generator.py   # 10 tests
 │   ├── test_table_manager.py   #  6 tests
-│   ├── test_xml_generator.py   # 13 tests
-│   ├── test_xml_validator.py   #  9 tests
+│   ├── test_xml_generator.py   # 17 tests
+│   ├── test_xml_validator.py   #  8 tests
 │   ├── test_xml_analyzer.py    # 15 tests
-│   └── test_scorecard_generator.py  # 15 tests
+│   ├── test_scorecard_generator.py  # 14 tests
+│   ├── test_pov_record_layouts.py   # 14 tests
+│   ├── test_pov_parser.py      # 11 tests
+│   ├── test_pov_flattener.py   #  7 tests
+│   └── test_pov_validator.py   #  8 tests (+ 2 sub-tests)
 ├── dtcc_ifw_21208_upload_package/
 │   ├── README.txt
 │   ├── required_files_list.txt
@@ -99,7 +123,10 @@ XMLGenerator/
 │   │   └── unsuccessful/       # Invalid XMLs
 │   └── data/
 │       └── WD_quote_samples.csv
-├── main.py                     # End-to-end orchestrator (generate + analyze)
+├── output/pov/                 # POV output directory (auto-created)
+│   ├── *_flattened.csv         # Flattened CSV output
+│   └── *_validation.txt        # Validation report
+├── main.py                     # End-to-end orchestrator (generate + analyze + flatten-pov)
 ├── requirements.txt
 └── requirements.md             # This file
 ```
@@ -543,7 +570,7 @@ Supports two modes: basic (from `ValidationResult`) and enhanced (from
 
 ### 8. Main Orchestrator (`main.py`)
 
-Two entry points for the DTCC IFW 21208 Withdrawal-Quote pipeline.
+Three entry points for the DTCC toolkit.
 
 **`run_pipeline(base_dir, csv_source, table_name, database, reference_xml) -> dict`**
 
@@ -569,12 +596,25 @@ Analyzes one or more external DTCC 21208 XMLs:
 3. Sort into success/unsuccessful folders
 4. Return summary dict
 
+**`flatten_pov(input_path, output_csv, base_dir) -> dict`**
+
+Parses and flattens a DTCC POV/FAR fixed-width file:
+
+1. Parse the fixed-width file via `pov_parser`
+2. Flatten hierarchical records into wide CSV via `pov_flattener`
+3. Write flattened data to CSV
+4. Validate CSV against original parsed data via `pov_validator`
+5. Write human-readable validation report
+
+Returns a summary dict with paths, counts, and validation status.
+
 **`main()`**
 
 CLI entry point with subcommands:
 - `generate` -- args: `--base-dir`, `--csv-source`, `--table-name`, `--database`,
   `--reference-xml`
 - `analyze` -- args: `input_path`, `--base-dir`
+- `flatten-pov` -- args: `input_path`, `--output-csv`, `--base-dir`
 
 **Databricks detection:**
 
@@ -584,24 +624,136 @@ local `local[*]` session otherwise. The local session explicitly sets
 `PYSPARK_PYTHON` and `spark.pyspark.python` to `sys.executable` to prevent
 PySpark workers from picking up an incompatible system Python.
 
+---
+
+## DTCC POV File Flattener
+
+### Overview
+
+Parses DTCC Positions & Valuations (POV) and Financial Activity Reporting (FAR)
+fixed-width text files, flattens the hierarchical multi-record-per-contract
+structure into one wide CSV row per contract, and validates the output against
+the original parsed data.
+
+### POV Record Layouts (`config/pov_record_layouts.py`)
+
+Defines the byte-level field layouts for 24 DTCC record types:
+
+| Category | Record Types | Description |
+|----------|-------------|-------------|
+| POV Headers | 100, 120 | File header, firm header |
+| POV Detail | 1301-1315 | Contract-level position and valuation data |
+| FAR Headers | 400, 420 | FAR file header, firm header |
+| FAR Detail | 4301-4309 | Financial activity detail records |
+
+Each record type is defined as an ordered list of `(field_name, width)` tuples.
+Standard detail records are 300 bytes wide (exceptions: 1305, 1309 are wider).
+
+**Key sets:**
+
+- `REPEATING_RECORD_TYPES` -- record types that may appear multiple times per
+  contract (e.g. `1303` Fund Detail, `1304` Loan Detail)
+- `POV_HEADER_TYPES` / `FAR_HEADER_TYPES` -- header vs. detail classification
+- `POV_DETAIL_TYPES` / `FAR_DETAIL_TYPES` -- detail record sets
+
+**Helper functions:**
+
+- `get_layout(record_type)` -- retrieve the field spec for a record type
+- `get_field_names(record_type, include_filler)` -- get field names
+- `get_total_width(record_type)` -- calculate expected line width
+- `detect_record_type(line)` -- identify a record type from a raw line
+
+### POV Parser (`modules/pov_parser.py`)
+
+Reads a fixed-width POV/FAR file line-by-line, detects each line's record type,
+and extracts fields by byte position.
+
+**Classes:**
+
+- `ParsedRecord` (dataclass) -- a single parsed line with `line_number`,
+  `record_type`, `record_description`, `fields` (dict), and `raw_line`.
+- `ParsedFile` (dataclass) -- full parse result with `header_records`,
+  `detail_records`, `errors`, `total_lines`, `parsed_lines`, `skipped_lines`,
+  `file_type`, `valuation_date`. Method: `to_summary_dict()`.
+
+**Functions:**
+
+- `parse_line(line, line_number) -> ParsedRecord | None`
+  Detects record type and extracts fields. Returns `None` for unrecognized lines.
+- `parse_file(filepath) -> ParsedFile`
+  Parses an entire file. Separates header and detail records. Auto-detects
+  file type (POV vs. FAR) and extracts the valuation date from the file header.
+
+### POV Flattener (`modules/pov_flattener.py`)
+
+Transforms hierarchical parsed records into a flat CSV structure.
+
+**Classes:**
+
+- `FlattenedResult` (dataclass) -- `header` (column names), `rows` (list of
+  dicts), `contract_count`, `record_type_max_occurrences` (per repeating type),
+  `source_filepath`.
+
+**Functions:**
+
+- `flatten_parsed_file(parsed) -> FlattenedResult`
+  Groups detail records by `Contract_Number`. For each contract, merges all
+  record types into a single wide row. Column names follow the pattern
+  `{record_type}_{field_name}` (e.g. `1301_Contract_Number`). Repeating
+  record types get an occurrence suffix (e.g. `1303_Fund_Value_1`,
+  `1303_Fund_Value_2`). Filler fields are excluded from the output.
+
+- `write_csv(result, output_path) -> str`
+  Writes the flattened data to a CSV file with the generated header.
+
+### POV Validator (`modules/pov_validator.py`)
+
+Cross-validates the flattened CSV against the original parsed data.
+
+**Classes:**
+
+- `FieldMismatch` (dataclass) -- details of a single value mismatch:
+  `contract_number`, `record_type`, `field_name`, `expected`, `actual`,
+  `occurrence`.
+- `ValidationReport` (dataclass) -- full report: `valid` (bool), `csv_path`,
+  `expected_contract_count`, `actual_contract_count`, `total_fields_checked`,
+  `mismatches`, `missing_record_types`, `errors`. Properties: `mismatch_count`,
+  `is_valid`. Method: `to_summary_dict()`.
+
+**Functions:**
+
+- `validate_flattened_csv(csv_path, parsed, flattened) -> ValidationReport`
+  Reads the CSV and compares every non-filler field against the original
+  parsed records. Checks contract count, field values, and record type coverage.
+- `write_validation_report(report, output_path) -> str`
+  Writes a human-readable text report with pass/fail status, summary stats,
+  and mismatch details.
+
 ## Testing
 
-79 tests across 7 test files, all executed via `pytest`.
+121 tests across 11 test files, all executed via `pytest`.
 
 | Test File                    | Tests | Covers                                    |
 |------------------------------|-------|-------------------------------------------|
-| test_ddl_generator.py        | 10    | Column presence, DELTA format, comments, database prefix, file save |
-| test_csv_generator.py        | 11    | Row loading, header match, CSV copy, ExpectedToPass filtering |
-| test_table_manager.py        |  6    | Table creation, CSV load, column order, null handling, read-back |
-| test_xml_generator.py        | 13    | SOAP structure, namespaces, tc attributes, Party/Relation elements, file naming, batch generation |
-| test_xml_validator.py        |  9    | Valid pass, malformed XML, missing required fields, TaxWithholding, Party/Relation validation |
+| test_ddl_generator.py        |  9    | Column presence, DELTA format, STRING types, comments, database prefix, file save |
+| test_csv_generator.py        | 10    | Row loading, header match, CSV copy/prepare, ExpectedToPass filtering |
+| test_table_manager.py        |  6    | Table creation, CSV load, column order, empty fields, read-back |
+| test_xml_generator.py        | 17    | SOAP envelope/body/operation, namespaces, tc attributes, Party elements, file naming, batch generation |
+| test_xml_validator.py        |  8    | Valid pass, malformed XML, missing PolNumber, batch pass/fail, policy number tracking |
 | test_xml_analyzer.py         | 15    | Conformance scoring, matched/missing/custom fields, directory analysis, invalid XML handling |
-| test_scorecard_generator.py  | 15    | Row count, schema match, PASS/FAIL, enhanced scorecard, error details, CSV save, file sorting, accounting |
+| test_scorecard_generator.py  | 14    | Row count, schema match, PASS/FAIL, enhanced scorecard, error details, CSV save, file sorting, analysis sorting |
+| test_pov_record_layouts.py   | 14    | Record descriptions, known widths, 300-byte rule, disjoint sets, detect_record_type, field name helpers |
+| test_pov_parser.py           | 11    | Line parsing (1301, 1302, 100), unknown records, multi-contract files, empty lines, file-not-found, summary dict |
+| test_pov_flattener.py        |  7    | Single/multi-contract flattening, repeating records with occurrence suffixes, filler exclusion, CSV write |
+| test_pov_validator.py        | 10    | Valid single/multi-contract validation, repeating records, tampered CSV detection, missing file, report writing |
 
 **Test infrastructure:**
 
 - `conftest.py` provides a session-scoped `SparkSession` fixture with
   `PYSPARK_PYTHON` pinned to `sys.executable`
+- `conftest.py` also provides shared test data helpers (`make_test_row`,
+  `write_test_csv`) that generate valid 21208 WD-Quote CSV data with all 135
+  schema columns correctly populated
 - Each test that loads CSV data uses a unique table name (UUID-based) to avoid
   `TABLE_OR_VIEW_ALREADY_EXISTS` errors across the shared Spark session
 - Temp directories are created per-test and cleaned up via the `tmp_dir` fixture
@@ -662,6 +814,35 @@ The following adjustments were made during implementation:
     pandas-based implementation (`_load_csv_serverless`) to work around
     serverless Spark's inability to read local workspace CSV files directly.
 
+12. **POV record layout definitions** -- The 24 DTCC POV/FAR record types were
+    manually transcribed from the canonical DTCC I&RS field spacing definitions
+    (public `pov.json` via `back9ins/dtcc` GitHub repo). Records 1311 and 1315
+    required corrections during initial implementation: `1311`'s Filler field
+    was adjusted from 50 to 54 bytes, and `1315`'s entire field list was revised
+    to match the canonical source and achieve the correct 300-byte total.
+
+13. **Hierarchical-to-flat transformation** -- The POV flattener handles
+    repeating record types (e.g. multiple `1303` Fund Detail records per
+    contract) by appending occurrence indices to column names (e.g.
+    `1303_Fund_Value_1`, `1303_Fund_Value_2`). The maximum occurrence count
+    across all contracts determines the number of columns generated.
+
+14. **POV pipeline is pure Python** -- Unlike the XML pipeline which requires
+    PySpark, the POV `flatten-pov` command runs without Spark. This makes it
+    lightweight and usable in any Python 3.10+ environment.
+
+15. **Test data helpers** -- `conftest.py` was extended with `make_test_row()`
+    and `write_test_csv()` to generate valid 21208 WD-Quote test data on the
+    fly. This replaced the old `generate_sample_csv()` function that was
+    removed when the CSV generator was redesigned as a simple file loader.
+
+16. **Test suite alignment** -- Test files for the table manager, XML
+    generator, XML validator, CSV generator, DDL generator, XML analyzer, and
+    scorecard generator were updated to work with the current 135-field 21208
+    WD-Quote schema and SOAP-wrapped XML format. The `ns3` namespace prefix
+    issue (reserved by Python's ElementTree) was resolved by using a safe
+    `acord` prefix in test XML construction.
+
 ## Databricks Usage
 
 **As a notebook (serverless):**
@@ -685,12 +866,23 @@ summary = analyze_external(
 )
 ```
 
+**Flatten DTCC POV file:**
+
+```python
+from main import flatten_pov
+summary = flatten_pov(
+    input_path="/Workspace/Users/you@company.com/data/pov_file.txt",
+    base_dir="/Workspace/Users/you@company.com/XMLGenerator/output/pov",
+)
+```
+
 **As a CLI:**
 
 ```bash
 python main.py generate --base-dir ./run_output --csv-source ./data/WD_quote_samples.csv
 python main.py analyze ./external_xmls/ --base-dir ./run_output
+python main.py flatten-pov ./data/pov_file.txt --base-dir ./output/pov
 ```
 
-All file paths are configurable. The pipeline auto-detects Databricks and reuses
-the existing SparkSession.
+All file paths are configurable. The XML pipelines auto-detect Databricks and
+reuse the existing SparkSession. The POV pipeline does not require Spark.

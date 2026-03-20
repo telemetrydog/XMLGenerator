@@ -1,18 +1,16 @@
 """
 End-to-end orchestrator for the DTCC IFW 21208 Withdrawal-Quote
-XML Generator pipeline.
+XML Generator pipeline and DTCC POV file flattener.
 
-Steps:
-    1. Generate DDL from ACORD 212/21208 schema config
-    2. Copy / locate WD_quote_samples CSV
-    3. Create Spark table from CSV
-    4. Generate SOAP-wrapped ACORD 21208 XML per row
-    5. Validate each XML against the DTCC IFW Data Dictionary
-    6. (Optional) Analyze reference XML for conformance
-    7. Generate a scorecard DataFrame
-    8. Sort XMLs into success/ and unsuccessful/ folders
+Commands:
+    generate     – Generate 21208 WD-Quote XMLs from CSV
+    analyze      – Analyze external DTCC 21208 XML(s)
+    flatten-pov  – Parse & flatten a DTCC POV/FAR fixed-width file to CSV
 
 Works locally (PySpark local mode) and in Databricks.
+
+PySpark-dependent modules are imported lazily so that the pure-Python
+POV pipeline (``flatten_pov``) can be called without Spark.
 """
 
 from __future__ import annotations
@@ -26,19 +24,6 @@ if sys.version_info < (3, 10):
         f"Python >= 3.10 is required. Current version: {sys.version}"
     )
 
-from pyspark.sql import SparkSession
-
-from modules.ddl_generator import generate_ddl, save_ddl
-from modules.csv_generator import prepare_csv, load_csv_rows
-from modules.table_manager import load_csv
-from modules.xml_generator import generate_all_xmls
-from modules.xml_validator import validate_all
-from modules.xml_analyzer import analyze_xml_file, analyze_xml_directory
-from modules.scorecard_generator import (
-    generate_scorecard, generate_enhanced_scorecard,
-    save_scorecard, sort_xml_files, sort_analyzed_files,
-)
-
 
 def _is_databricks() -> bool:
     """Detect whether we're running inside Databricks."""
@@ -50,8 +35,10 @@ def _is_databricks() -> bool:
         return False
 
 
-def _get_spark(app_name: str = "XMLGenerator") -> SparkSession:
+def _get_spark(app_name: str = "XMLGenerator"):
     """Return existing Databricks session or create a local one."""
+    from pyspark.sql import SparkSession
+
     if _is_databricks():
         return SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
 
@@ -91,6 +78,16 @@ def run_pipeline(
     Returns:
         Summary dict with paths and counts.
     """
+    from modules.ddl_generator import generate_ddl, save_ddl
+    from modules.csv_generator import prepare_csv, load_csv_rows
+    from modules.table_manager import load_csv
+    from modules.xml_generator import generate_all_xmls
+    from modules.xml_validator import validate_all
+    from modules.xml_analyzer import analyze_xml_file
+    from modules.scorecard_generator import (
+        generate_scorecard, save_scorecard, sort_xml_files,
+    )
+
     output_dir  = os.path.join(base_dir, "output")
     data_dir    = os.path.join(base_dir, "data")
     xml_dir     = os.path.join(output_dir, "xml")
@@ -189,6 +186,11 @@ def analyze_external(
     """
     Analyze one or more external DTCC 21208 XMLs against our schema.
     """
+    from modules.xml_analyzer import analyze_xml_file, analyze_xml_directory
+    from modules.scorecard_generator import (
+        generate_enhanced_scorecard, save_scorecard, sort_analyzed_files,
+    )
+
     output_dir  = os.path.join(base_dir, "output")
     success_dir = os.path.join(output_dir, "success")
     fail_dir    = os.path.join(output_dir, "unsuccessful")
@@ -242,9 +244,106 @@ def analyze_external(
     }
 
 
+def flatten_pov(
+    input_path: str,
+    output_csv: str = "",
+    base_dir: str = ".",
+) -> dict:
+    """
+    Parse a DTCC POV/FAR fixed-width file, flatten records into one row
+    per contract, write the result to CSV, and validate the output.
+
+    This function is pure Python and does **not** require PySpark.
+    """
+    from config.pov_record_layouts import RECORD_TYPE_DESCRIPTIONS
+    from modules.pov_parser import parse_file as pov_parse_file
+    from modules.pov_flattener import flatten_parsed_file, write_csv as pov_write_csv
+    from modules.pov_validator import (
+        validate_flattened_csv, write_validation_report,
+    )
+
+    output_dir = os.path.join(base_dir, "output", "pov")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Step 1 – Parse
+    print(f"[1/4] Parsing POV file: {input_path}")
+    parsed = pov_parse_file(input_path)
+    print(f"       File type: {parsed.file_type or 'Unknown'}")
+    print(f"       Total lines: {parsed.total_lines}")
+    print(f"       Parsed lines: {parsed.parsed_lines}")
+    print(f"       Skipped lines: {parsed.skipped_lines}")
+    if parsed.valuation_date:
+        print(f"       Valuation date: {parsed.valuation_date}")
+    if parsed.errors:
+        print(f"       Parse warnings: {len(parsed.errors)}")
+        for err in parsed.errors[:5]:
+            print(f"         - {err}")
+        if len(parsed.errors) > 5:
+            print(f"         ... and {len(parsed.errors) - 5} more")
+
+    rt_counts = parsed.record_type_counts
+    print("       Record type breakdown:")
+    for rt, cnt in sorted(rt_counts.items()):
+        desc = RECORD_TYPE_DESCRIPTIONS.get(rt, "")
+        print(f"         {rt} ({desc}): {cnt}")
+
+    # Step 2 – Flatten
+    print(f"\n[2/4] Flattening {len(parsed.detail_records)} detail records...")
+    flattened = flatten_parsed_file(parsed)
+    print(f"       Contracts: {flattened.contract_count}")
+    print(f"       Columns: {len(flattened.header)}")
+    if flattened.record_type_max_occurrences:
+        print("       Max occurrences per record type:")
+        for rt, mx in sorted(flattened.record_type_max_occurrences.items()):
+            if mx > 1:
+                print(f"         {rt}: {mx}")
+
+    # Step 3 – Write CSV
+    if not output_csv:
+        basename = os.path.splitext(os.path.basename(input_path))[0]
+        output_csv = os.path.join(output_dir, f"{basename}_flattened.csv")
+
+    print(f"\n[3/4] Writing CSV: {output_csv}")
+    csv_path = pov_write_csv(flattened, output_csv)
+    print(f"       CSV written with {flattened.contract_count} rows, "
+          f"{len(flattened.header)} columns")
+
+    # Step 4 – Validate
+    print(f"\n[4/4] Validating flattened CSV against parsed data...")
+    report = validate_flattened_csv(csv_path, parsed, flattened)
+
+    report_path = os.path.join(
+        output_dir,
+        os.path.splitext(os.path.basename(input_path))[0] + "_validation.txt",
+    )
+    write_validation_report(report, report_path)
+
+    if report.valid:
+        print(f"       PASS – all {report.total_fields_checked} fields verified")
+    else:
+        print(f"       FAIL – {report.mismatch_count} mismatches, "
+              f"{len(report.errors)} errors")
+        for err in report.errors[:5]:
+            print(f"         - {err}")
+    print(f"       Validation report: {report_path}")
+
+    print("\nPOV flattening complete!")
+    return {
+        "input_path": input_path,
+        "csv_path": csv_path,
+        "validation_report": report_path,
+        "valid": report.valid,
+        "contract_count": flattened.contract_count,
+        "column_count": len(flattened.header),
+        "total_fields_checked": report.total_fields_checked,
+        "mismatches": report.mismatch_count,
+        **parsed.to_summary_dict(),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="DTCC IFW 21208 Withdrawal-Quote XML Generator & Analyzer"
+        description="DTCC IFW 21208 XML Generator, Analyzer & POV Flattener"
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
@@ -270,10 +369,21 @@ def main():
     analyze_parser.add_argument("--base-dir", default=".",
                                 help="Base output directory")
 
+    pov_parser = subparsers.add_parser(
+        "flatten-pov",
+        help="Parse & flatten a DTCC POV/FAR fixed-width file to CSV",
+    )
+    pov_parser.add_argument("input_path",
+                            help="Path to the POV/FAR fixed-width text file")
+    pov_parser.add_argument("--output-csv", default="",
+                            help="Output CSV path (auto-generated if omitted)")
+    pov_parser.add_argument("--base-dir", default=".",
+                            help="Base output directory")
+
     args = parser.parse_args()
 
     if args.command == "generate":
-        run_pipeline(
+        summary = run_pipeline(
             base_dir=args.base_dir,
             csv_source=args.csv_source,
             table_name=args.table_name,
@@ -281,9 +391,20 @@ def main():
             reference_xml=args.reference_xml,
         )
     elif args.command == "analyze":
-        analyze_external(args.input_path, base_dir=args.base_dir)
+        summary = analyze_external(args.input_path, base_dir=args.base_dir)
+    elif args.command == "flatten-pov":
+        summary = flatten_pov(
+            input_path=args.input_path,
+            output_csv=args.output_csv,
+            base_dir=args.base_dir,
+        )
     else:
-        run_pipeline()
+        summary = run_pipeline()
+
+    if summary:
+        print("\n=== Summary ===")
+        for k, v in summary.items():
+            print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":
