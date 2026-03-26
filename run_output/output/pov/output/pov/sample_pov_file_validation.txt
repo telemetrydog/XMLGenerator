@@ -1,8 +1,0 @@
-DTCC POV Flattening Validation Report
-==================================================
-CSV File:           /Workspace/Users/edward.m.ruiz@brighthousefinancial.com/XMLGenerator/run_output/output/pov/output/pov/sample_pov_file_flattened.csv
-Overall Result:     PASS
-Expected Contracts: 1
-Actual Contracts:   1
-Fields Checked:     70
-Mismatches:         0
